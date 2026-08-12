@@ -77,10 +77,12 @@ pub enum ArrayType {
 pub enum DefaultValue {
     Bool(bool),
     Int(i64),
+    UInt(u64),
     Float(f64),
     String(String),
     BoolArray(Vec<bool>),
     IntArray(Vec<i64>),
+    UIntArray(Vec<u64>),
     FloatArray(Vec<f64>),
     StringArray(Vec<String>),
 }

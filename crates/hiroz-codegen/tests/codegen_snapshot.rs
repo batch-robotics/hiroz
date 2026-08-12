@@ -63,6 +63,15 @@ fn snapshot_basic_types() {
 }
 
 #[test]
+fn snapshot_defaults() {
+    let msgs = resolve_corpus();
+    let msg = get_resolved(&msgs, "Defaults");
+    let tokens =
+        generate_message_impl_with_cdr(msg, &ctx(), &HashSet::new()).expect("generate Defaults");
+    insta::assert_snapshot!("defaults", format_tokens(tokens));
+}
+
+#[test]
 fn snapshot_strings() {
     let msgs = resolve_corpus();
     let msg = get_resolved(&msgs, "Strings");
