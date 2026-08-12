@@ -351,7 +351,7 @@ fn generate_cdr_deserialize_field(
                         }
                         #[cfg(not(target_endian = "little"))]
                         {
-                            let mut __arr = [Default::default(); #n_lit];
+                            let mut __arr = ::std::array::from_fn(|_| Default::default());
                             for __slot in __arr.iter_mut() {
                                 *__slot = ::hiroz_cdr::CdrDeserialize::cdr_deserialize(__r)?;
                             }
@@ -362,7 +362,7 @@ fn generate_cdr_deserialize_field(
             } else {
                 quote! {
                     let #fname: #rust_elem_ty = {
-                        let mut __arr = [Default::default(); #n_lit];
+                        let mut __arr = ::std::array::from_fn(|_| Default::default());
                         for __slot in __arr.iter_mut() {
                             *__slot = ::hiroz_cdr::CdrDeserialize::cdr_deserialize(__r)?;
                         }
