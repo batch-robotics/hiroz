@@ -494,15 +494,23 @@ impl Resolver {
         // Get dependencies: goal type
         let mut deps = BTreeMap::new();
 
-        // Get UUID from resolved type descriptions (key is package/name without /msg/)
-        if let Some(uuid_desc) = self.type_descriptions.get("unique_identifier_msgs/UUID") {
-            deps.insert(uuid_desc.type_name.clone(), uuid_desc.clone());
-        }
+        // Get UUID from resolved type descriptions (key is package/name without /msg/).
+        // Hard error, not `if let Some(..)`: goal_id is a required field of every
+        // action's SendGoal_Request, so a missing UUID description here means the
+        // hash we're about to compute is silently wrong, not merely incomplete.
+        let uuid_desc = self
+            .type_descriptions
+            .get("unique_identifier_msgs/UUID")
+            .ok_or_else(|| anyhow::anyhow!("UUID not found in type descriptions"))?;
+        deps.insert(uuid_desc.type_name.clone(), uuid_desc.clone());
 
-        // Get Time (key is package/name without /msg/)
-        if let Some(time_desc) = self.type_descriptions.get("builtin_interfaces/Time") {
-            deps.insert(time_desc.type_name.clone(), time_desc.clone());
-        }
+        // Get Time (key is package/name without /msg/). Same reasoning as UUID above:
+        // stamp is a required field of every action's SendGoal_Response.
+        let time_desc = self
+            .type_descriptions
+            .get("builtin_interfaces/Time")
+            .ok_or_else(|| anyhow::anyhow!("Time not found in type descriptions"))?;
+        deps.insert(time_desc.type_name.clone(), time_desc.clone());
 
         // Get ServiceEventInfo (key is package/name without /msg/)
         let service_event_info_desc = self
@@ -514,9 +522,16 @@ impl Resolver {
             service_event_info_desc.clone(),
         );
 
-        // Add goal type description
+        // Add goal type description, plus any custom message types *it* references
+        // (e.g. a Goal field whose type is itself a user-defined message) — mirrors
+        // resolve_service's collect_nested_deps calls for request/response just above
+        // in this file. Omitting this meant an action whose Goal/Result/Feedback
+        // embedded another custom message computed a hash that ignored that nested
+        // type entirely, silently diverging from what rosidl computes for the same
+        // structure.
         let goal_desc = goal.type_description();
         deps.insert(goal_desc.type_name.clone(), goal_desc.clone());
+        self.collect_nested_deps(&goal_desc, &mut deps);
 
         // Calculate action service hash (uses /action/ path instead of /srv/)
         let service_hash = crate::hashing::calculate_service_type_hash(
@@ -599,10 +614,14 @@ impl Resolver {
         // Get dependencies
         let mut deps = BTreeMap::new();
 
-        // Get UUID from resolved type descriptions (key is package/name without /msg/)
-        if let Some(uuid_desc) = self.type_descriptions.get("unique_identifier_msgs/UUID") {
-            deps.insert(uuid_desc.type_name.clone(), uuid_desc.clone());
-        }
+        // Get UUID from resolved type descriptions (key is package/name without /msg/).
+        // Hard error, not `if let Some(..)`: see calculate_send_goal_hash's identical
+        // comment just above in this file — same reasoning applies here.
+        let uuid_desc = self
+            .type_descriptions
+            .get("unique_identifier_msgs/UUID")
+            .ok_or_else(|| anyhow::anyhow!("UUID not found in type descriptions"))?;
+        deps.insert(uuid_desc.type_name.clone(), uuid_desc.clone());
 
         // Get Time (key is package/name without /msg/)
         if let Some(time_desc) = self.type_descriptions.get("builtin_interfaces/Time") {
@@ -619,9 +638,14 @@ impl Resolver {
             service_event_info_desc.clone(),
         );
 
-        // Add result type description
+        // Add result type description, plus any custom message types *it* references
+        // (e.g. a Result field whose type is itself a user-defined message) — see
+        // calculate_send_goal_hash's identical comment on `goal_desc` just above in
+        // this file. This is the fix for actions whose Result embeds another custom
+        // message: without it, that nested type was silently excluded from the hash.
         let result_desc = result.type_description();
         deps.insert(result_desc.type_name.clone(), result_desc.clone());
+        self.collect_nested_deps(&result_desc, &mut deps);
 
         // Calculate action service hash
         let service_hash = crate::hashing::calculate_service_type_hash(
@@ -674,13 +698,20 @@ impl Resolver {
         // Get dependencies
         let mut deps = BTreeMap::new();
 
-        // Get UUID from resolved type descriptions
-        if let Some(uuid_desc) = self.type_descriptions.get("unique_identifier_msgs/UUID") {
-            deps.insert(uuid_desc.type_name.clone(), uuid_desc.clone());
-        }
+        // Get UUID from resolved type descriptions. Hard error, not
+        // `if let Some(..)`: see calculate_send_goal_hash's identical comment
+        // for why — goal_id is a required field of FeedbackMessage too.
+        let uuid_desc = self
+            .type_descriptions
+            .get("unique_identifier_msgs/UUID")
+            .ok_or_else(|| anyhow::anyhow!("UUID not found in type descriptions"))?;
+        deps.insert(uuid_desc.type_name.clone(), uuid_desc.clone());
 
-        // Add feedback type description
+        // Add feedback type description, plus any custom message types *it*
+        // references — see calculate_send_goal_hash's identical comment on
+        // `goal_desc`. Fixes actions whose Feedback embeds another custom message.
         let feedback_desc = feedback.type_description();
+        self.collect_nested_deps(&feedback_desc, &mut deps);
         deps.insert(feedback_desc.type_name.clone(), feedback_desc);
 
         // Build TypeDescriptionMsg and calculate hash

@@ -438,6 +438,21 @@ fn resolve_corpus_actions() -> Vec<ResolvedAction> {
     resolver
         .resolve_messages(msgs)
         .expect("Failed to resolve messages for action resolver");
+    // Every action's SendGoal/GetResult/FeedbackMessage wrapper types have a
+    // `goal_id: unique_identifier_msgs/UUID` field, so hash computation needs
+    // that type's real description registered first — without it, resolving
+    // actions now fails loudly instead of silently computing an incomplete hash.
+    let uuid_msgs = discover_messages(
+        &corpus_dir()
+            .parent()
+            .unwrap()
+            .join("unique_identifier_msgs"),
+        "unique_identifier_msgs",
+    )
+    .expect("Failed to discover unique_identifier_msgs");
+    resolver
+        .resolve_messages(uuid_msgs)
+        .expect("Failed to resolve unique_identifier_msgs");
     let actions = parse_corpus_actions();
     resolver
         .resolve_actions(actions)

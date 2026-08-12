@@ -37,7 +37,13 @@ const NEW_PACKAGES: &[&str] = &[
 
 /// Dependencies of the new packages that must be present in the resolver context.
 /// service_msgs and type_description_interfaces are needed by the Jazzy resolver
-/// (is_humble=false) for service hash computation.
+/// (is_humble=false) for service hash computation. unique_identifier_msgs is
+/// needed by every action among NEW_PACKAGES (e.g. tf2_msgs/LookupTransform):
+/// every action's SendGoal/GetResult/FeedbackMessage wrapper types have a
+/// `goal_id: unique_identifier_msgs/UUID` field, and resolving an action
+/// without that type registered now fails loudly (previously silently
+/// computed an incomplete/incorrect hash — see resolver.rs's
+/// calculate_send_goal_hash et al.).
 const DEP_PACKAGES: &[&str] = &[
     "builtin_interfaces",
     "std_msgs",
@@ -46,6 +52,7 @@ const DEP_PACKAGES: &[&str] = &[
     "rcl_interfaces",
     "service_msgs",
     "type_description_interfaces",
+    "unique_identifier_msgs",
 ];
 
 // ============================================================================
