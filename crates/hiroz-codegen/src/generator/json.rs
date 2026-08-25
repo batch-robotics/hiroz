@@ -187,10 +187,12 @@ fn convert_default_value(dv: &DefaultValue) -> serde_json::Value {
     match dv {
         DefaultValue::Bool(b) => serde_json::Value::Bool(*b),
         DefaultValue::Int(i) => serde_json::Value::Number((*i).into()),
+        DefaultValue::UInt(i) => serde_json::Value::Number((*i).into()),
         DefaultValue::Float(f) => serde_json::json!(*f),
         DefaultValue::String(s) => serde_json::Value::String(s.clone()),
         DefaultValue::BoolArray(arr) => serde_json::json!(arr),
         DefaultValue::IntArray(arr) => serde_json::json!(arr),
+        DefaultValue::UIntArray(arr) => serde_json::json!(arr),
         DefaultValue::FloatArray(arr) => serde_json::json!(arr),
         DefaultValue::StringArray(arr) => serde_json::json!(arr),
     }

@@ -195,6 +195,21 @@ pub fn parse_default_value(s: &str) -> Result<DefaultValue> {
             return Ok(DefaultValue::IntArray(ints));
         }
 
+        // Values above i64::MAX are valid defaults for uint64 fields.
+        let mut uints = Vec::new();
+        let mut all_uint = true;
+        for elem in &elements {
+            if let Ok(i) = elem.parse::<u64>() {
+                uints.push(i);
+            } else {
+                all_uint = false;
+                break;
+            }
+        }
+        if all_uint {
+            return Ok(DefaultValue::UIntArray(uints));
+        }
+
         // Try to parse as float array
         let mut floats = Vec::new();
         let mut all_float = true;
@@ -237,6 +252,8 @@ pub fn parse_default_value(s: &str) -> Result<DefaultValue> {
         Ok(DefaultValue::String(s[1..s.len() - 1].to_string()))
     } else if let Ok(i) = s.parse::<i64>() {
         Ok(DefaultValue::Int(i))
+    } else if let Ok(i) = s.parse::<u64>() {
+        Ok(DefaultValue::UInt(i))
     } else if let Ok(f) = s.parse::<f64>() {
         Ok(DefaultValue::Float(f))
     } else {
@@ -329,6 +346,22 @@ mod tests {
         match parse_default_value("-100").unwrap() {
             DefaultValue::Int(i) => assert_eq!(i, -100),
             _ => panic!("Expected Int"),
+        }
+    }
+
+    #[test]
+    fn test_parse_default_value_uint64_max() {
+        match parse_default_value("18446744073709551615").unwrap() {
+            DefaultValue::UInt(value) => assert_eq!(value, u64::MAX),
+            other => panic!("Expected UInt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_default_value_uint64_array() {
+        match parse_default_value("[0, 18446744073709551615]").unwrap() {
+            DefaultValue::UIntArray(values) => assert_eq!(values, vec![0, u64::MAX]),
+            other => panic!("Expected UIntArray, got {other:?}"),
         }
     }
 

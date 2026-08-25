@@ -1,6 +1,5 @@
 ---
 source: crates/hiroz-codegen/tests/codegen_snapshot.rs
-assertion_line: 127
 expression: format_tokens(tokens)
 ---
 pub struct Fibonacci;
@@ -42,7 +41,7 @@ impl ::hiroz::action::ZAction for Fibonacci {
         ::hiroz::entity::TypeInfo::new(
             "test_interface_files::action::dds_::Fibonacci_FeedbackMessage_",
             ::hiroz::entity::TypeHash::from_rihs_string(
-                    "RIHS01_00dda06a3151125d7c8b1f8108fcb5ff3a63cf9dc1a6bc21ad2a44c32de880c9",
+                    "RIHS01_252060896e948dee7c38df1e1e117ee65dd40d1794b0ba4c216a434f46cf95c4",
                 )
                 .expect("Invalid RIHS hash"),
         )

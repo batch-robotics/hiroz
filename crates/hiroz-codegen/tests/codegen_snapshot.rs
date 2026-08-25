@@ -63,6 +63,15 @@ fn snapshot_basic_types() {
 }
 
 #[test]
+fn snapshot_defaults() {
+    let msgs = resolve_corpus();
+    let msg = get_resolved(&msgs, "Defaults");
+    let tokens =
+        generate_message_impl_with_cdr(msg, &ctx(), &HashSet::new()).expect("generate Defaults");
+    insta::assert_snapshot!("defaults", format_tokens(tokens));
+}
+
+#[test]
 fn snapshot_strings() {
     let msgs = resolve_corpus();
     let msg = get_resolved(&msgs, "Strings");
@@ -116,6 +125,23 @@ fn snapshot_action_fibonacci() {
         .expect("discover actions");
 
     let mut resolver = Resolver::new(true);
+    // Every action's SendGoal/GetResult/FeedbackMessage wrapper types have a
+    // `goal_id: unique_identifier_msgs/UUID` field, so hash computation needs
+    // that type's real description registered first (mirrors
+    // action_hash_check.rs's setup) — without it, resolving actions now fails
+    // loudly instead of silently computing an incomplete hash.
+    let uuid_msgs = hiroz_codegen::discovery::discover_messages(
+        &corpus_dir()
+            .parent()
+            .unwrap()
+            .join("unique_identifier_msgs"),
+        "unique_identifier_msgs",
+    )
+    .expect("discover unique_identifier_msgs");
+    resolver
+        .resolve_messages(uuid_msgs)
+        .expect("resolve unique_identifier_msgs");
+
     let resolved = resolver.resolve_actions(parsed).expect("resolve actions");
 
     let action = resolved

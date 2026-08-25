@@ -4,7 +4,9 @@ use anyhow::Result;
 use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
 
-use crate::types::{ArrayType, Field, FieldType, ResolvedMessage, ResolvedService};
+use crate::types::{
+    ArrayType, DefaultValue, Field, FieldType, ResolvedMessage, ResolvedService,
+};
 
 /// Context for code generation, tracking external vs local packages
 #[derive(Default, Clone)]
@@ -351,7 +353,7 @@ fn generate_cdr_deserialize_field(
                         }
                         #[cfg(not(target_endian = "little"))]
                         {
-                            let mut __arr = [Default::default(); #n_lit];
+                            let mut __arr = ::std::array::from_fn(|_| Default::default());
                             for __slot in __arr.iter_mut() {
                                 *__slot = ::hiroz_cdr::CdrDeserialize::cdr_deserialize(__r)?;
                             }
@@ -362,7 +364,7 @@ fn generate_cdr_deserialize_field(
             } else {
                 quote! {
                     let #fname: #rust_elem_ty = {
-                        let mut __arr = [Default::default(); #n_lit];
+                        let mut __arr = ::std::array::from_fn(|_| Default::default());
                         for __slot in __arr.iter_mut() {
                             *__slot = ::hiroz_cdr::CdrDeserialize::cdr_deserialize(__r)?;
                         }
@@ -602,6 +604,7 @@ fn generate_struct_with_context(
     let has_large_array = fields
         .iter()
         .any(|f| matches!(&f.field_type.array, ArrayType::Fixed(n) if *n > 32));
+    let has_explicit_default = fields.iter().any(|field| field.default.is_some());
 
     // Generate constants as associated constants
     let const_defs: Vec<TokenStream> = constants
@@ -628,8 +631,9 @@ fn generate_struct_with_context(
         quote! {}
     };
 
-    if has_large_array {
-        // Large array messages need smart-default for arrays >32 elements
+    if has_large_array || has_explicit_default {
+        // SmartDefault supports both arrays larger than std's built-in Default
+        // implementations and defaults declared in ROS interface files.
         Ok(quote! {
             #[derive(Debug, Clone, ::smart_default::SmartDefault, ::serde::Serialize, ::serde::Deserialize)]
             #[cfg_attr(feature = "python_registry", derive(::hiroz_derive::FromPyMessage, ::hiroz_derive::IntoPyMessage))]
@@ -720,14 +724,11 @@ fn generate_field_def_with_context(
     // Check if this is a ZBuf field (for Python bridge attribute)
     let is_zbuf = is_zbuf_field(field);
 
-    // Add attributes for large fixed arrays (>32 elements)
+    // Add serde support for large fixed arrays (>32 elements).
     let serde_attributes = if let ArrayType::Fixed(n) = &field.field_type.array {
         if *n > 32 {
-            // Generate a default value code string for the array
-            let default_code = generate_array_default_code(&field.field_type, *n)?;
             quote! {
                 #[serde(with = "serde_big_array::BigArray")]
-                #[default(_code = #default_code)]
             }
         } else {
             quote! {}
@@ -735,6 +736,23 @@ fn generate_field_def_with_context(
     } else {
         quote! {}
     };
+
+    // SmartDefault accepts Rust code through a string-valued attribute. Keep
+    // construction here type- and shape-aware so fixed arrays produce arrays,
+    // sequences produce Vecs, and strings are escaped as Rust literals.
+    let default_code = if let Some(value) = &field.default {
+        Some(generate_explicit_default_code(field, value)?)
+    } else if let ArrayType::Fixed(n) = &field.field_type.array {
+        (*n > 32)
+            .then(|| generate_array_default_code(&field.field_type, *n))
+            .transpose()?
+    } else {
+        None
+    };
+    let default_attribute = default_code.map_or_else(
+        || quote! {},
+        |code| quote! { #[default(_code = #code)] },
+    );
 
     // Add Python bridge attribute for ZBuf fields
     let python_attributes = if is_zbuf {
@@ -747,9 +765,69 @@ fn generate_field_def_with_context(
 
     Ok(quote! {
         #serde_attributes
+        #default_attribute
         #python_attributes
         pub #name: #field_type
     })
+}
+
+fn generate_explicit_default_code(field: &Field, value: &DefaultValue) -> Result<String> {
+    let scalar = |value: String| match &field.field_type.array {
+        ArrayType::Single => Ok(value),
+        _ => anyhow::bail!("scalar default for array field {}", field.name),
+    };
+    let array = |values: Vec<String>| match &field.field_type.array {
+        ArrayType::Fixed(expected) => {
+            if values.len() != *expected {
+                anyhow::bail!(
+                    "default for fixed array field {} has {} elements, expected {}",
+                    field.name,
+                    values.len(),
+                    expected
+                );
+            }
+            Ok(format!("[{}]", values.join(", ")))
+        }
+        ArrayType::Bounded(limit) => {
+            if values.len() > *limit {
+                anyhow::bail!(
+                    "default for bounded sequence field {} has {} elements, limit is {}",
+                    field.name,
+                    values.len(),
+                    limit
+                );
+            }
+            Ok(format!("vec![{}]", values.join(", ")))
+        }
+        ArrayType::Unbounded => Ok(format!("vec![{}]", values.join(", "))),
+        ArrayType::Single => anyhow::bail!("array default for scalar field {}", field.name),
+    };
+
+    match value {
+        DefaultValue::Bool(value) => scalar(value.to_string()),
+        DefaultValue::Int(value) => scalar(value.to_string()),
+        DefaultValue::UInt(value) => scalar(value.to_string()),
+        DefaultValue::Float(value) => scalar(format!("{value:?}")),
+        DefaultValue::String(value) => scalar(format!("{value:?}.to_string()")),
+        DefaultValue::BoolArray(values) => {
+            array(values.iter().map(ToString::to_string).collect())
+        }
+        DefaultValue::IntArray(values) => {
+            array(values.iter().map(ToString::to_string).collect())
+        }
+        DefaultValue::UIntArray(values) => {
+            array(values.iter().map(ToString::to_string).collect())
+        }
+        DefaultValue::FloatArray(values) => {
+            array(values.iter().map(|value| format!("{value:?}")).collect())
+        }
+        DefaultValue::StringArray(values) => array(
+            values
+                .iter()
+                .map(|value| format!("{value:?}.to_string()"))
+                .collect(),
+        ),
+    }
 }
 
 /// Generate default value code string for an array
