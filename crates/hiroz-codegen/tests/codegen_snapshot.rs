@@ -72,6 +72,42 @@ fn snapshot_defaults() {
 }
 
 #[test]
+fn snapshot_float_fields_with_integer_defaults() {
+    // ROS IDL permits integer literals as defaults on float fields
+    // (`float64 x 0`); the emitted Rust literal must still be a float one or
+    // the generated crate fails to compile (E0308). Defaults.msg only carries
+    // float-literal defaults, so this message is built inline.
+    use hiroz_codegen::{parser::parse_field, types::ParsedMessage};
+
+    let fields = [
+        "float32 scalar_f32 0",
+        "float64 scalar_f64 -3",
+        "float32[3] fixed_f32 [0, 1, -2]",
+        "float64[] seq_f64 [7]",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(line_num, line)| parse_field(line, "test_interface_files", line_num + 1))
+    .collect::<Result<Vec<_>, _>>()
+    .expect("parse fields");
+    let parsed = ParsedMessage {
+        name: "FloatIntegerDefaults".to_string(),
+        package: "test_interface_files".to_string(),
+        fields,
+        constants: Vec::new(),
+        source: String::new(),
+        path: PathBuf::new(),
+    };
+    let mut resolver = Resolver::new(false);
+    let resolved = resolver
+        .resolve_messages(vec![parsed])
+        .expect("resolve FloatIntegerDefaults");
+    let tokens = generate_message_impl_with_cdr(&resolved[0], &ctx(), &HashSet::new())
+        .expect("generate FloatIntegerDefaults");
+    insta::assert_snapshot!("float_integer_defaults", format_tokens(tokens));
+}
+
+#[test]
 fn snapshot_strings() {
     let msgs = resolve_corpus();
     let msg = get_resolved(&msgs, "Strings");
