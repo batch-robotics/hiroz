@@ -4,9 +4,7 @@ use anyhow::Result;
 use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
 
-use crate::types::{
-    ArrayType, DefaultValue, Field, FieldType, ResolvedMessage, ResolvedService,
-};
+use crate::types::{ArrayType, DefaultValue, Field, FieldType, ResolvedMessage, ResolvedService};
 
 /// Context for code generation, tracking external vs local packages
 #[derive(Default, Clone)]
@@ -749,10 +747,8 @@ fn generate_field_def_with_context(
     } else {
         None
     };
-    let default_attribute = default_code.map_or_else(
-        || quote! {},
-        |code| quote! { #[default(_code = #code)] },
-    );
+    let default_attribute =
+        default_code.map_or_else(|| quote! {}, |code| quote! { #[default(_code = #code)] });
 
     // Add Python bridge attribute for ZBuf fields
     let python_attributes = if is_zbuf {
@@ -819,9 +815,7 @@ fn generate_explicit_default_code(field: &Field, value: &DefaultValue) -> Result
         DefaultValue::UInt(value) => scalar(int_literal(value.to_string())),
         DefaultValue::Float(value) => scalar(format!("{value:?}")),
         DefaultValue::String(value) => scalar(format!("{value:?}.to_string()")),
-        DefaultValue::BoolArray(values) => {
-            array(values.iter().map(ToString::to_string).collect())
-        }
+        DefaultValue::BoolArray(values) => array(values.iter().map(ToString::to_string).collect()),
         DefaultValue::IntArray(values) => {
             array(values.iter().map(|v| int_literal(v.to_string())).collect())
         }
