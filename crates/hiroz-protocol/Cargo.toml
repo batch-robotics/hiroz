@@ -17,10 +17,10 @@ rmw-zenoh = []
 no-type-hash = []              # ROS 2 Humble doesn't support type hashing
 
 [dependencies]
-zenoh = { version = "1.9.0", default-features = false }
+zenoh = { version = "~1.8", default-features = false }
 
 [dev-dependencies]
-zenoh = { version = "1.9.0", default-features = false }
+zenoh = { version = "~1.8", default-features = false }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

@@ -36,7 +36,9 @@ fn resolve_action(nested_definition: &str) -> ResolvedAction {
     );
 
     let mut resolver = Resolver::new(false);
-    resolver.resolve_messages(messages).expect("resolve messages");
+    resolver
+        .resolve_messages(messages)
+        .expect("resolve messages");
 
     let action = parse_action(
         "Nested goal\n---\nNested result\n---\nNested feedback\n",

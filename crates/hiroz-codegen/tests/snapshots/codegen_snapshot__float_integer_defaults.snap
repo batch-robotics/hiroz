@@ -1,0 +1,187 @@
+---
+source: crates/hiroz-codegen/tests/codegen_snapshot.rs
+expression: format_tokens(tokens)
+---
+#[derive(
+    Debug,
+    Clone,
+    ::smart_default::SmartDefault,
+    ::serde::Serialize,
+    ::serde::Deserialize
+)]
+#[cfg_attr(
+    feature = "python_registry",
+    derive(::hiroz_derive::FromPyMessage, ::hiroz_derive::IntoPyMessage)
+)]
+#[cfg_attr(
+    feature = "python_registry",
+    ros_msg(module = "hiroz_msgs_py.types.test_interface_files")
+)]
+pub struct FloatIntegerDefaults {
+    #[default(_code = "0.0")]
+    pub scalar_f32: f32,
+    #[default(_code = "-3.0")]
+    pub scalar_f64: f64,
+    #[default(_code = "[0.0, 1.0, -2.0]")]
+    pub fixed_f32: [f32; 3],
+    #[default(_code = "vec![7.0]")]
+    pub seq_f64: ::std::vec::Vec<f64>,
+}
+impl FloatIntegerDefaults {}
+impl ::hiroz::MessageTypeInfo for FloatIntegerDefaults {
+    fn type_name() -> &'static str {
+        "test_interface_files::msg::dds_::FloatIntegerDefaults_"
+    }
+    fn type_hash() -> ::hiroz::entity::TypeHash {
+        ::hiroz::entity::TypeHash::from_rihs_string(
+                "RIHS01_914b7c8a0e46c7dd8b4ad588ee7ab8646de3851bdde969c4fbf6bded14b92765",
+            )
+            .expect("Invalid RIHS hash")
+    }
+    fn message_schema() -> Option<::std::sync::Arc<::hiroz::dynamic::MessageSchema>> {
+        static SCHEMA: ::std::sync::OnceLock<
+            ::std::sync::Arc<::hiroz::dynamic::MessageSchema>,
+        > = ::std::sync::OnceLock::new();
+        Some(
+            SCHEMA
+                .get_or_init(|| {
+                    ::hiroz::dynamic::MessageSchema::builder(
+                            "test_interface_files/msg/FloatIntegerDefaults",
+                        )
+                        .field("scalar_f32", ::hiroz::dynamic::FieldType::Float32)
+                        .field("scalar_f64", ::hiroz::dynamic::FieldType::Float64)
+                        .field(
+                            "fixed_f32",
+                            ::hiroz::dynamic::FieldType::Array(
+                                ::std::boxed::Box::new(
+                                    ::hiroz::dynamic::FieldType::Float32,
+                                ),
+                                3usize,
+                            ),
+                        )
+                        .field(
+                            "seq_f64",
+                            ::hiroz::dynamic::FieldType::Sequence(
+                                ::std::boxed::Box::new(::hiroz::dynamic::FieldType::Float64),
+                            ),
+                        )
+                        .build()
+                        .expect("generated message schema must be valid")
+                })
+                .clone(),
+        )
+    }
+}
+impl ::hiroz::ros_msg::WithTypeInfo for FloatIntegerDefaults {}
+impl crate::size_estimation::SizeEstimation for FloatIntegerDefaults {
+    fn estimated_cdr_size(&self) -> usize {
+        let mut size = 0usize;
+        size += 4usize;
+        size += 8usize;
+        size += 12usize;
+        size += 4 + (self.seq_f64.len() * 8usize);
+        size + 16
+    }
+}
+impl FloatIntegerDefaults {
+    /// Get an accurate estimate of the serialized CDR size.
+    ///
+    /// This implementation accounts for dynamic fields (Vec, String, ZBuf)
+    /// and provides a conservative but accurate upper bound for SHM allocation.
+    pub fn estimated_serialized_size(&self) -> usize {
+        4 + crate::size_estimation::SizeEstimation::estimated_cdr_size(self)
+    }
+}
+impl ::hiroz_cdr::CdrSerialize for FloatIntegerDefaults {
+    fn cdr_serialize<BO, B>(&self, __w: &mut ::hiroz_cdr::CdrWriter<'_, BO, B>)
+    where
+        BO: ::byteorder::ByteOrder,
+        B: ::hiroz_cdr::CdrBuffer,
+    {
+        ::hiroz_cdr::CdrSerialize::cdr_serialize(&self.scalar_f32, __w);
+        ::hiroz_cdr::CdrSerialize::cdr_serialize(&self.scalar_f64, __w);
+        #[cfg(target_endian = "little")] __w.write_pod_slice(&self.fixed_f32);
+        #[cfg(not(target_endian = "little"))]
+        for __item in &self.fixed_f32 {
+            ::hiroz_cdr::CdrSerialize::cdr_serialize(__item, __w);
+        }
+        __w.write_sequence_length(self.seq_f64.len());
+        #[cfg(target_endian = "little")]
+        if !self.seq_f64.is_empty() {
+            __w.write_pod_slice(&self.seq_f64);
+        }
+        #[cfg(not(target_endian = "little"))]
+        for __item in &self.seq_f64 {
+            ::hiroz_cdr::CdrSerialize::cdr_serialize(__item, __w);
+        }
+    }
+}
+impl ::hiroz_cdr::CdrDeserialize for FloatIntegerDefaults {
+    fn cdr_deserialize<'__de, BO>(
+        __r: &mut ::hiroz_cdr::CdrReader<'__de, BO>,
+    ) -> ::hiroz_cdr::Result<Self>
+    where
+        BO: ::byteorder::ByteOrder,
+    {
+        let scalar_f32 = ::hiroz_cdr::CdrDeserialize::cdr_deserialize(__r)?;
+        let scalar_f64 = ::hiroz_cdr::CdrDeserialize::cdr_deserialize(__r)?;
+        let fixed_f32: [f32; 3] = {
+            #[cfg(target_endian = "little")]
+            {
+                let __slice = __r.read_pod_slice::<f32>(3)?;
+                ::std::convert::TryInto::try_into(__slice)
+                    .map_err(|_| ::hiroz_cdr::Error::UnexpectedEof)?
+            }
+            #[cfg(not(target_endian = "little"))]
+            {
+                let mut __arr = ::std::array::from_fn(|_| Default::default());
+                for __slot in __arr.iter_mut() {
+                    *__slot = ::hiroz_cdr::CdrDeserialize::cdr_deserialize(__r)?;
+                }
+                __arr
+            }
+        };
+        let seq_f64: Vec<f64> = {
+            let __count = __r.read_sequence_length()?;
+            #[cfg(target_endian = "little")]
+            { if __count > 0 { __r.read_pod_slice::<f64>(__count)? } else { vec![] } }
+            #[cfg(not(target_endian = "little"))]
+            {
+                let mut __v = Vec::with_capacity(__count);
+                for _ in 0..__count {
+                    __v.push(::hiroz_cdr::CdrDeserialize::cdr_deserialize(__r)?);
+                }
+                __v
+            }
+        };
+        Ok(Self {
+            scalar_f32,
+            scalar_f64,
+            fixed_f32,
+            seq_f64,
+        })
+    }
+}
+impl ::hiroz_cdr::CdrSerializedSize for FloatIntegerDefaults {
+    fn cdr_serialized_size(&self, __pos: usize) -> usize {
+        let mut __p = __pos;
+        __p = ::hiroz_cdr::CdrSerializedSize::cdr_serialized_size(&self.scalar_f32, __p);
+        __p = ::hiroz_cdr::CdrSerializedSize::cdr_serialized_size(&self.scalar_f64, __p);
+        if !self.fixed_f32.is_empty() {
+            let __elem_align = ::std::mem::align_of_val(&self.fixed_f32[0]);
+            __p
+                += (__p % __elem_align != 0) as usize
+                    * (__elem_align - __p % __elem_align);
+            __p += self.fixed_f32.len() * ::std::mem::size_of_val(&self.fixed_f32[0]);
+        }
+        __p += (__p % 4 != 0) as usize * (4 - __p % 4) + 4;
+        if !self.seq_f64.is_empty() {
+            let __elem_align = ::std::mem::align_of_val(&self.seq_f64[0]);
+            __p
+                += (__p % __elem_align != 0) as usize
+                    * (__elem_align - __p % __elem_align);
+            __p += self.seq_f64.len() * ::std::mem::size_of_val(&self.seq_f64[0]);
+        }
+        __p
+    }
+}
