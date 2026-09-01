@@ -276,6 +276,28 @@ mod tests {
         );
     }
 
+    /// A verbatim liveliness token published by a ros2_control 6.x controller
+    /// node under rmw_zenoh_cpp. Its QoS suffix `::,:,:,:,,` omits every
+    /// component equal to rmw_zenoh's default profile (including the history
+    /// depth). Parsing this used to fail with `QosDecodeError(InvalidHistory)`,
+    /// leaving all such endpoints invisible in the hiroz graph.
+    #[test]
+    fn test_parse_liveliness_default_omitted_qos() {
+        let ke: zenoh::key_expr::KeyExpr = "@ros2_lv/0/95490dfe6a05e29aeb31538636e4ef2b/190/203/MP/%/%/tool_io_state_broadcaster/%tool_io_state_broadcaster%joint_states/sensor_msgs::msg::dds_::JointState_/RIHS01_a13ee3a330e346c9d87b5aa18d24e11690752bd33a0350f11c5882bc9179260e/::,:,:,:,,"
+            .try_into()
+            .unwrap();
+        let entity = RmwZenohFormatter::parse_liveliness(&ke).expect("token must parse");
+        let endpoint = match entity {
+            crate::entity::Entity::Endpoint(endpoint) => endpoint,
+            other => panic!("expected endpoint entity, got {other:?}"),
+        };
+        assert_eq!(endpoint.kind, EndpointKind::Publisher);
+        assert_eq!(endpoint.topic, "/tool_io_state_broadcaster/joint_states");
+        assert_eq!(endpoint.qos.reliability, QosReliability::Reliable);
+        assert_eq!(endpoint.qos.durability, QosDurability::Volatile);
+        assert_eq!(endpoint.qos.history, QosHistory::KeepLast(42));
+    }
+
     #[test]
     fn test_qos_encode_decode() {
         let qos = QosProfile::default();

@@ -7,6 +7,12 @@ extern crate alloc;
 use alloc::string::String;
 use core::fmt::Display;
 
+/// History depth that rmw_zenoh_cpp substitutes when a liveliness token
+/// omits the depth (i.e. the depth equals rmw_zenoh's default profile).
+/// Keep in sync with `RMW_ZENOH_DEFAULT_HISTORY_DEPTH` in rmw_zenoh's
+/// `rmw_zenoh_cpp/src/detail/qos.cpp`.
+const RMW_ZENOH_DEFAULT_HISTORY_DEPTH: usize = 42;
+
 /// QoS profile for ROS 2 entities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct QosProfile {
@@ -92,17 +98,31 @@ impl QosProfile {
         };
 
         // Parse history: <kind>,<depth>
+        //
+        // rmw_zenoh_cpp omits every QoS component that equals its default
+        // profile, so an endpoint with default history encodes the whole
+        // field as `,` (empty kind AND empty depth) — e.g. the
+        // `::,:,:,:,,` / `:1:,:,:,:,,` suffixes emitted by ros2_control
+        // controller nodes. An empty kind means the default kind
+        // (KEEP_LAST) and an empty depth means the emitter's default
+        // depth. rmw_zenoh_cpp's own `keyexpr_to_qos` restores its
+        // default depth (42, see rmw_zenoh's `qos.cpp`); mirror that here
+        // instead of rejecting the token.
         let history_parts: alloc::vec::Vec<&str> = fields[2].split(',').collect();
         if history_parts.len() < 2 {
             return Err(QosDecodeError::InvalidHistory);
         }
 
         let history = match history_parts[0] {
-            "" | "1" => {
-                // KeepLast - parse depth
-                let depth = history_parts[1]
-                    .parse::<usize>()
-                    .map_err(|_| QosDecodeError::InvalidHistory)?;
+            // "" = default kind; "0" = RMW SYSTEM_DEFAULT, which
+            // rmw_zenoh resolves to its default kind; "1" = KEEP_LAST.
+            "" | "0" | "1" => {
+                let depth = match history_parts[1] {
+                    "" => RMW_ZENOH_DEFAULT_HISTORY_DEPTH,
+                    depth => depth
+                        .parse::<usize>()
+                        .map_err(|_| QosDecodeError::InvalidHistory)?,
+                };
                 QosHistory::KeepLast(depth)
             }
             "2" => QosHistory::KeepAll,
@@ -180,5 +200,73 @@ impl Display for QosDecodeError {
             QosDecodeError::InvalidDurability => write!(f, "Invalid durability value"),
             QosDecodeError::InvalidHistory => write!(f, "Invalid history value"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// rmw_zenoh_cpp omits every QoS component equal to its default profile.
+    /// An endpoint with an entirely-default profile therefore encodes as
+    /// `::,:,:,:,,` (empty history kind AND depth). Emitted in the wild by
+    /// ros2_control 6.x controller nodes; must decode, not error.
+    #[test]
+    fn decode_fully_default_rmw_zenoh_qos() {
+        let qos = QosProfile::decode("::,:,:,:,,").expect("default-omitted QoS must decode");
+        assert_eq!(qos.reliability, QosReliability::Reliable);
+        assert_eq!(qos.durability, QosDurability::Volatile);
+        assert_eq!(
+            qos.history,
+            QosHistory::KeepLast(RMW_ZENOH_DEFAULT_HISTORY_DEPTH)
+        );
+    }
+
+    /// Same as above with an explicit non-default durability
+    /// (`:1:,:,:,:,,` — transient-local, everything else default).
+    #[test]
+    fn decode_transient_local_with_default_history() {
+        let qos = QosProfile::decode(":1:,:,:,:,,").expect("QoS with omitted history must decode");
+        assert_eq!(qos.reliability, QosReliability::Reliable);
+        assert_eq!(qos.durability, QosDurability::TransientLocal);
+        assert_eq!(
+            qos.history,
+            QosHistory::KeepLast(RMW_ZENOH_DEFAULT_HISTORY_DEPTH)
+        );
+    }
+
+    /// Explicit depth with omitted (default) history kind: `::,100:...`.
+    #[test]
+    fn decode_explicit_depth_default_kind() {
+        let qos = QosProfile::decode("::,100:,:,:,,").expect("explicit depth must decode");
+        assert_eq!(qos.history, QosHistory::KeepLast(100));
+    }
+
+    /// Keep-all history (`2,`): depth carries no meaning and may be empty.
+    #[test]
+    fn decode_keep_all() {
+        let qos = QosProfile::decode("::2,:,:,:,,").expect("keep-all must decode");
+        assert_eq!(qos.history, QosHistory::KeepAll);
+    }
+
+    /// Round-trip through our own encoder still works.
+    #[test]
+    fn encode_decode_roundtrip() {
+        let qos = QosProfile {
+            reliability: QosReliability::BestEffort,
+            durability: QosDurability::TransientLocal,
+            history: QosHistory::KeepLast(7),
+        };
+        let decoded = QosProfile::decode(&qos.encode()).expect("roundtrip");
+        assert_eq!(decoded, qos);
+    }
+
+    /// Garbage in the history kind still errors.
+    #[test]
+    fn decode_invalid_history_kind_rejected() {
+        assert_eq!(
+            QosProfile::decode("::x,:,:,:,,"),
+            Err(QosDecodeError::InvalidHistory)
+        );
     }
 }
