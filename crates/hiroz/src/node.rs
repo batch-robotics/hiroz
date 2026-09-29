@@ -845,8 +845,7 @@ impl ZNode {
         let send_goal_type = dds_from_namespace(&action_ns, &format!("{aname}_SendGoal"));
         let get_result_type = dds_from_namespace(&action_ns, &format!("{aname}_GetResult"));
         let cancel_goal_type = dds_from_namespace("action_msgs::srv", "CancelGoal");
-        let feedback_type_dds =
-            dds_from_namespace(&action_ns, &format!("{aname}_FeedbackMessage"));
+        let feedback_type_dds = dds_from_namespace(&action_ns, &format!("{aname}_FeedbackMessage"));
 
         let send_goal_client =
             self.create_raw_service_client(&send_goal_service, &send_goal_type, goal_hash)?;
@@ -895,8 +894,7 @@ impl ZNode {
         let send_goal_type = dds_from_namespace(&action_ns, &format!("{aname}_SendGoal"));
         let get_result_type = dds_from_namespace(&action_ns, &format!("{aname}_GetResult"));
         let cancel_goal_type = dds_from_namespace("action_msgs::srv", "CancelGoal");
-        let feedback_type_dds =
-            dds_from_namespace(&action_ns, &format!("{aname}_FeedbackMessage"));
+        let feedback_type_dds = dds_from_namespace(&action_ns, &format!("{aname}_FeedbackMessage"));
         let status_type_dds = dds_from_namespace("action_msgs::msg", "GoalStatusArray");
 
         let send_goal_server =
