@@ -186,6 +186,11 @@ path = "examples/parameters/yaml.rs"
 required-features = []
 
 [[example]]
+name = "z_parameter_ros_args"
+path = "examples/parameters/ros_args.rs"
+required-features = []
+
+[[example]]
 name = "z_parameter_client"
 path = "examples/parameters/client.rs"
 required-features = []

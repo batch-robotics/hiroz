@@ -198,6 +198,7 @@ accDescr: A ZNodeBuilder creates a ZNode that owns both a ParameterStore and a P
 | **Range validation** | `FloatingPointRange` and `IntegerRange` constraints on descriptors |
 | **Read-only** | Parameters that reject all changes after declaration |
 | **YAML loading** | Load initial values from ROS 2 parameter YAML files with `/**` wildcard support |
+| **Command line** | `--ros-args --params-file <file> -p name:=value` parsed as rclcpp does |
 | **Overrides** | Programmatic overrides applied at declaration time |
 | **Validation callbacks** | Accept or reject changes with a reason string |
 | **Standard services** | 6 parameter services compatible with `ros2 param` CLI |
@@ -391,9 +392,12 @@ hiroz supports the standard ROS 2 parameter YAML format:
     device_name: "lidar_front"
 ```
 
-- `/**` applies to all nodes (wildcard)
-- `/my_node` applies only to that exact node
-- Node-specific values override wildcard values
+- Selectors match the node's fully-qualified name: `/my_node` is the root-namespace node, `/my_ns/my_node` a namespaced one
+- A `*` segment matches one name segment and `**` any number: `/**` applies to all nodes, `/my_ns/**` to every node under `/my_ns`
+- A selector without a leading `/` is treated as if it had one, and namespaces may be nested keys (`my_ns: {my_node: {ros__parameters: ...}}`)
+- Nested mappings under `ros__parameters` flatten to dotted names, as in ROS: `db: {url: x}` declares `db.url`
+- JSON is valid YAML, so a generated `{"/**": {"ros__parameters": {...}}}` file works as-is
+- Sequences must be homogeneous (`[1, 2]` is an integer array, `[1, 2.5]` is rejected); a value hiroz cannot represent is an error, not silently dropped
 
 Load via the builder:
 
@@ -405,7 +409,53 @@ let node = ctx.create_node("my_node")
 
 Parameters from the file become overrides — they replace the default value when you call `declare_parameter`.
 
-If both wildcard (`/**`) and node-specific entries match, node-specific values win. If you also call `.with_parameter_overrides(map)`, the last builder call wins.
+If several entries match, they apply in file order and the later one wins, so put `/**` before node-specific entries. If you also call `.with_parameter_overrides(map)`, the last builder call wins.
+
+## Command-Line Arguments
+
+rclcpp and rclpy nodes take parameter overrides from the process command line. hiroz parses the same argv with `RosArgs` and applies it with `.with_ros_args(...)`, the equivalent of rclcpp's `NodeOptions::arguments`:
+
+```bash
+my_node --verbose --ros-args --params-file base.yaml --params-file site.yaml -p max_speed:=2.5 -- serve
+```
+
+```rust
+use clap::Parser;
+use hiroz::{Builder, ros_args::RosArgs};
+
+// Parse std::env::args(); params files are read and validated here.
+let ros_args = RosArgs::from_env()?;
+
+// Everything outside `--ros-args ... --`, program name first:
+// ["my_node", "--verbose", "serve"]
+let cli = MyCli::parse_from(ros_args.remaining_args());
+
+let node = ctx
+    .create_node("my_node")
+    .with_ros_args(&ros_args)
+    .build()?;
+
+// The declared default is replaced by the command-line value (2.5),
+// read-only parameters included.
+let mut desc = ParameterDescriptor::new("max_speed", ParameterType::Double);
+desc.read_only = true;
+let max_speed = node.declare_parameter("max_speed", ParameterValue::Double(1.0), desc)?;
+```
+
+Inside a `--ros-args` section, which runs until `--` or the end of argv and may appear more than once:
+
+| Argument | Effect |
+|----------|--------|
+| `--params-file <path>` | Load overrides from a parameter YAML file (repeatable) |
+| `-p <name>:=<value>`, `--param <name>:=<value>` | Override one parameter on every node |
+| `-p <node>:<name>:=<value>` | Override one parameter on the node matching `<node>` (`talker` selects `/talker`) |
+
+- **Order**: all `--params-file` and `-p` sources apply in argv order, so the later value for a name wins.
+- **Node matching**: file selectors match as described in [Loading from YAML](#loading-from-yaml). The fully-qualified name is resolved when the node is built, so `.with_namespace(...)` may come before or after `.with_ros_args(...)`.
+- **Values**: `-p` values are parsed like values in a parameter file: `5` is an integer, `5.0` a double, `true`/`True`/`TRUE` a bool, `[1, 2]` an integer array, and a quoted `'5'` a string. hiroz uses the YAML 1.2 core schema, so unlike rcl, `yes`/`no`/`on`/`off` are strings rather than bools.
+- **Precedence**: `.with_parameter_overrides(map)` and `.with_parameter_file(path)` win over the command line, as rclcpp's `NodeOptions::parameter_overrides` do.
+- **Errors**: a missing flag value, a malformed `-p` rule, an unreadable or invalid params file, or any other argument inside `--ros-args` is an error. That includes ROS arguments hiroz does not implement yet (`-r`, `--log-level`, `--enclave`, ...), matching rclcpp's `UnknownROSArgsError` rather than ignoring them.
+- **Type mismatches**: an override whose type differs from the declared `ParameterType` makes `declare_parameter` fail, as in rclcpp.
 
 ## Node Builder Options
 
@@ -414,8 +464,9 @@ If both wildcard (`/**`) and node-specific entries match, node-specific values w
 | `.without_parameters()` | Disable parameter services entirely |
 | `.with_parameter_overrides(map)` | Set overrides from a `HashMap<String, ParameterValue>` |
 | `.with_parameter_file(path)` | Load overrides from a YAML file |
+| `.with_ros_args(&ros_args)` | Apply `--params-file` / `-p` overrides from a parsed command line |
 
-If you use both a file and programmatic overrides, the last call wins.
+If you use both a file and programmatic overrides, the last call wins. Both win over `.with_ros_args(...)`.
 
 ## /parameter_events
 
@@ -443,8 +494,9 @@ This matches the ROS 2 default topic/QoS shape. Tools like `ros2 param` and `rqt
 | Set | `node->set_parameter(Parameter("name", v))` | `node.set_parameter(Parameter::new("name", v))` → `Result<(), String>` |
 | Describe | `node->describe_parameter("name")` | `node.describe_parameter("name")` |
 | Callback | `add_on_set_parameters_callback(cb)` | `node.on_set_parameters(cb)` |
-| YAML load | `--ros-args --params-file file.yaml` | `.with_parameter_file(path)` |
-| Overrides | `--ros-args -p name:=value` | `.with_parameter_overrides(map)` |
+| YAML load | `--ros-args --params-file file.yaml` | `.with_ros_args(&RosArgs::from_env()?)` or `.with_parameter_file(path)` |
+| Overrides | `--ros-args -p name:=value` | `.with_ros_args(&RosArgs::from_env()?)` or `.with_parameter_overrides(map)` |
+| Node-local argv | `NodeOptions().arguments({...})` | `.with_ros_args(&RosArgs::parse(argv)?)` |
 | Disable | not possible | `.without_parameters()` |
 | Range | `FloatingPointRange` / `IntegerRange` | same types in `ParameterDescriptor` |
 | Dynamic typing | `dynamic_typing` descriptor flag | same flag in `ParameterDescriptor` |
@@ -498,6 +550,9 @@ cargo run --example z_parameter_callback
 
 # YAML loading and overrides
 cargo run --example z_parameter_yaml
+
+# Command-line overrides (--ros-args)
+cargo run --example z_parameter_ros_args -- --ros-args -p max_speed:=2.5 -p robot_name:=rover
 
 # Remote ParameterClient flow
 cargo run --example z_parameter_client

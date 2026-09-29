@@ -55,6 +55,23 @@ async fn main() -> Result<()> {
 | Set domain ID | `--ros-args -p use_sim_time:=...` / env | `.with_domain_id(42)` |
 | Build context | implicit | `.build()?` |
 | Create node | `std::make_shared<rclcpp::Node>("name")` | `ctx.create_node("name").build()?` |
+| Command-line parameters | `rclcpp::init(argc, argv)` reads `--ros-args` | `ctx.create_node("name").with_ros_args(&RosArgs::from_env()?)` |
+
+## Command-Line Arguments
+
+rclcpp reads `--ros-args` from the argv passed to `rclcpp::init` (or from `NodeOptions::arguments`). hiroz has no global init, so parse the argv explicitly and hand it to each node that should see it:
+
+| rclcpp / rclpy | hiroz |
+|----------------|-------|
+| `rclcpp::init(argc, argv)` | `let ros_args = RosArgs::from_env()?;` |
+| `NodeOptions().arguments({"--ros-args", ...})` | `RosArgs::parse(["prog", "--ros-args", ...])?` |
+| `rclcpp::remove_ros_arguments(argc, argv)` | `ros_args.remaining_args()` |
+| `--params-file file.yaml` | same, applied by `.with_ros_args(&ros_args)` |
+| `-p name:=value` / `-p node:name:=value` | same |
+| `-r from:=to`, `--log-level`, `-e`, ... | not supported yet: parsing fails with `RosArgsError::UnknownArguments` |
+| `NodeOptions::parameter_overrides` | `.with_parameter_overrides(map)` (wins over the command line) |
+
+See [Parameters → Command-Line Arguments](../core-concepts/parameters.md#command-line-arguments) for the matching and precedence rules.
 
 ## QoS Presets
 

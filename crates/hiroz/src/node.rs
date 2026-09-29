@@ -28,6 +28,7 @@ use crate::{
         service::{ParameterService, ParameterServiceConfig},
     },
     pubsub::{ZPubBuilder, ZSubBuilder},
+    ros_args::RosArgs,
     ros_msg::MessageTypeInfo,
     service::{ZClientBuilder, ZServerBuilder},
 };
@@ -88,6 +89,8 @@ pub struct ZNodeBuilder {
     pub(crate) enable_parameters: bool,
     /// Initial parameter overrides applied at declaration time.
     pub(crate) parameter_overrides: std::collections::HashMap<String, ParameterValue>,
+    /// Command-line arguments whose parameter overrides apply to this node.
+    pub(crate) ros_args: Option<RosArgs>,
 }
 
 impl ZNodeBuilder {
@@ -192,15 +195,41 @@ impl ZNodeBuilder {
         mut self,
         path: &std::path::Path,
     ) -> std::result::Result<Self, String> {
-        let node_fqn = if self.namespace.is_empty() || self.namespace == "/" {
-            format!("/{}", self.name)
-        } else {
-            format!("{}/{}", self.namespace, self.name)
-        };
-
+        let node_fqn = self.fully_qualified_name();
         let overrides = crate::parameter::yaml::load_parameter_file(path, &node_fqn)?;
         self.parameter_overrides.extend(overrides);
         Ok(self)
+    }
+
+    /// Apply the parameter overrides of a ROS 2 command line to this node,
+    /// like rclcpp's `NodeOptions::arguments`.
+    ///
+    /// The `--params-file` and `-p` overrides that match this node's
+    /// fully-qualified name are resolved when the node is built, so the call
+    /// order relative to [`with_namespace`](Self::with_namespace) does not
+    /// matter. They replace the default value when a parameter is declared,
+    /// read-only parameters included.
+    ///
+    /// Overrides set with [`with_parameter_overrides`](Self::with_parameter_overrides)
+    /// or [`with_parameter_file`](Self::with_parameter_file) take precedence
+    /// over the command line, as rclcpp's `NodeOptions::parameter_overrides`
+    /// do. Calling this again replaces the previous arguments.
+    ///
+    /// ```rust,ignore
+    /// let ros_args = RosArgs::from_env()?;
+    /// let node = ctx.create_node("my_node").with_ros_args(&ros_args).build()?;
+    /// ```
+    pub fn with_ros_args(mut self, ros_args: &RosArgs) -> Self {
+        self.ros_args = Some(ros_args.clone());
+        self
+    }
+
+    fn fully_qualified_name(&self) -> String {
+        if self.namespace.is_empty() || self.namespace == "/" {
+            format!("/{}", self.name)
+        } else {
+            format!("{}/{}", self.namespace, self.name)
+        }
     }
 }
 
@@ -215,6 +244,7 @@ impl Builder for ZNodeBuilder {
     fn build(self) -> Result<ZNode> {
         let id = self.counter.increment();
         tracing::Span::current().record("id", id);
+        let node_fqn = self.fully_qualified_name();
 
         debug!(
             "[NOD] Creating node: {}/{}, id={}",
@@ -259,6 +289,13 @@ impl Builder for ZNodeBuilder {
         // Create parameter service if enabled (default)
         let parameter_service = if self.enable_parameters {
             debug!("[NOD] Creating parameter service");
+            // Command-line overrides first, so builder overrides win over them.
+            let mut overrides = self
+                .ros_args
+                .as_ref()
+                .map(|args| args.parameter_overrides(&node_fqn))
+                .unwrap_or_default();
+            overrides.extend(self.parameter_overrides);
             let service = ParameterService::new(ParameterServiceConfig {
                 session: self.session.clone(),
                 graph: self.graph.clone(),
@@ -270,7 +307,7 @@ impl Builder for ZNodeBuilder {
                 node_id: id,
                 counter: &self.counter,
                 clock: &self.clock,
-                overrides: self.parameter_overrides,
+                overrides,
                 type_desc_service: type_desc_service.as_ref(),
             })?;
             info!("[NOD] ParameterService created");

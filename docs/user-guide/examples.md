@@ -61,6 +61,7 @@ Leave the router running in a separate terminal, then run any example from the h
 | `z_parameter_declare` | Local parameter declare/get/set/undeclare flow | `cargo run --example z_parameter_declare` |
 | `z_parameter_callback` | Validation callback flow for parameter changes | `cargo run --example z_parameter_callback` |
 | `z_parameter_yaml` | YAML parameter loading plus programmatic overrides | `cargo run --example z_parameter_yaml` |
+| `z_parameter_ros_args` | `--ros-args --params-file` / `-p` overrides from the command line | `cargo run --example z_parameter_ros_args -- --ros-args -p max_speed:=2.5` |
 | `z_parameter_client` | Remote `ParameterClient` calls against a parameter server | `cargo run --example z_parameter_client` |
 
 The CDR **publishing** examples build their nodes with `.with_type_description_service()`, so runtime-typed tools such as `hu meter echo` can fetch the schema and decode their traffic. That call is opt-in on a hiroz node — copy it into your own nodes if you want them to be introspectable the same way. ROS 2 differs here: `rclcpp` and `rclpy` start that service by default, so a C++ or Python node is introspectable without asking.
@@ -313,5 +314,6 @@ These focused examples demonstrate the hiroz parameter subsystem without a mode-
 cargo run --example z_parameter_declare
 cargo run --example z_parameter_callback
 cargo run --example z_parameter_yaml
+cargo run --example z_parameter_ros_args -- --ros-args -p max_speed:=2.5
 cargo run --example z_parameter_client
 ```
