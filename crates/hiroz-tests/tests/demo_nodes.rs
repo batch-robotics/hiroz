@@ -166,16 +166,19 @@ fn test_hiroz_talker_to_rcl_listener() {
     println!("\n=== Test: hiroz talker -> RCL demo_nodes_cpp listener ===");
 
     // Start RCL listener
-    let listener = Command::new("ros2")
+    let mut listener = Command::new("ros2")
         .args(["run", "demo_nodes_cpp", "listener"])
         .env("RMW_IMPLEMENTATION", "rmw_zenoh_cpp")
         .env("ZENOH_CONFIG_OVERRIDE", router.rmw_zenoh_env())
+        // ROS 2 logging goes to stderr by default, so the listener's `I heard`
+        // lines are not on stdout. Capture both.
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .process_group(0)
         .spawn()
         .expect("Failed to start RCL listener");
 
+    let listener_output = common::OutputCapture::start(&mut listener);
     let _listener_guard = ProcessGuard::new(listener, "RCL listener");
 
     // Proceed as soon as the RCL listener is discoverable, not after a blind sleep.
@@ -196,8 +199,29 @@ fn test_hiroz_talker_to_rcl_listener() {
 
     talker_handle.join().expect("Talker thread panicked");
 
-    // Give some time for RCL listener to process
-    wait_for_ready(Duration::from_secs(1));
+    // Poll for the listener's output on a deadline rather than sampling once
+    // after a fixed sleep. The talker publishes a finite burst of 10 messages
+    // over ~900ms, so a single sample races CI-load stalls. The reverse
+    // direction (`test_rcl_talker_to_hiroz_listener`) documents the same hazard
+    // and solves it the same way.
+    //
+    // Assert the C++ listener actually received. Without this the test passes
+    // whether or not the listener works at all -- it could crash on the first
+    // sample and nothing here would notice. The listener never exits on its
+    // own, so read what it has printed so far rather than waiting for EOF.
+    let heard_deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let heard = loop {
+        let snap = listener_output.snapshot();
+        if snap.contains("I heard") || std::time::Instant::now() >= heard_deadline {
+            break snap;
+        }
+        thread::sleep(Duration::from_millis(200));
+    };
+    assert!(
+        heard.contains("I heard"),
+        "the C++ listener printed no `I heard` line, so it received nothing from the hiroz \
+         talker. Captured output:\n{heard}"
+    );
 
     println!("Test passed: hiroz talker published messages to RCL listener");
 }
@@ -383,17 +407,22 @@ fn test_hiroz_add_two_ints_server_to_rcl_client() {
     // discoverable before it starts.
     wait_for_ready(Duration::from_secs(5));
 
-    // Start RCL client. Null stdout — nothing reads it, and the try_wait loop
-    // below waits on the child's exit, which a full unread pipe would block.
-    let client = Command::new("ros2")
+    // Start RCL client with both streams piped, and drain them on reader threads
+    // (see `OutputCapture`). `ros2 run` reports why it failed on stderr; without
+    // that text a failure here is only diagnosable as an exit code. Draining
+    // concurrently is what keeps piping safe for the try_wait loop below — an
+    // unread pipe would fill and block the child.
+    let mut client = Command::new("ros2")
         .args(["run", "demo_nodes_cpp", "add_two_ints_client"])
         .env("RMW_IMPLEMENTATION", "rmw_zenoh_cpp")
         .env("ZENOH_CONFIG_OVERRIDE", router.rmw_zenoh_env())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .process_group(0)
         .spawn()
         .expect("Failed to start RCL client");
+
+    let client_output = common::OutputCapture::start(&mut client);
 
     // Guard owns the child throughout; poll try_wait through the guard's own
     // handle. Reaping via a separate handle first could let Drop later signal a
@@ -409,6 +438,9 @@ fn test_hiroz_add_two_ints_server_to_rcl_client() {
             .as_mut()
             .expect("client child owned by guard");
         if let Some(status) = child.try_wait().expect("Failed to poll RCL client") {
+            // Reaped: take it out of the guard so `Drop` cannot signal a PID the
+            // OS may have recycled. See the action test for the same reasoning.
+            client_guard.child.take();
             break Some(status);
         }
         if std::time::Instant::now() >= client_deadline {
@@ -419,11 +451,23 @@ fn test_hiroz_add_two_ints_server_to_rcl_client() {
     // Require success, not just exit: an instantly-failing `ros2 run` (missing
     // verb, bad args) also exits within 30s and would false-pass.
     match client_status {
-        None => panic!(
-            "RCL add_two_ints client did not exit within 30s (likely failed to discover the hiroz server)"
-        ),
+        None => {
+            // Kill the child before rendering. `finish()` joins the reader
+            // threads, and they block on the open pipes until the child exits.
+            // In this branch the child provably has not exited, so calling
+            // `finish()` first would hang until nextest's kill and print
+            // nothing -- the exact failure this capture exists to prevent.
+            drop(client_guard);
+            panic!(
+                "RCL add_two_ints client did not exit within 30s (likely failed to discover the hiroz server)\n{}",
+                client_output.finish()
+            )
+        }
         Some(status) if !status.success() => {
-            panic!("RCL add_two_ints client exited with failure status {status:?}")
+            panic!(
+                "RCL add_two_ints client exited with failure status {status:?}\n{}",
+                client_output.finish()
+            )
         }
         Some(_) => {}
     }
@@ -536,20 +580,78 @@ fn test_hiroz_fibonacci_action_server_to_rcl_client() {
     wait_for_ready(Duration::from_secs(2));
 
     // Start RCL client
-    let client = Command::new("ros2")
+    let mut client = Command::new("ros2")
         .args(["run", "action_tutorials_cpp", "fibonacci_action_client"])
         .env("RMW_IMPLEMENTATION", "rmw_zenoh_cpp")
         .env("ZENOH_CONFIG_OVERRIDE", router.rmw_zenoh_env())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .process_group(0)
         .spawn()
         .expect("Failed to start RCL fibonacci action client");
 
-    let _client_guard = ProcessGuard::new(client, "RCL fibonacci action client");
+    let client_output = common::OutputCapture::start(&mut client);
+    let mut client_guard = ProcessGuard::new(client, "RCL fibonacci action client");
 
-    // Wait for the client to complete
-    wait_for_ready(Duration::from_secs(10));
+    // Wait on the client's actual exit rather than a fixed sleep, and require it
+    // to succeed. Previously this test slept and then declared success without
+    // looking at the client at all: it passed whether the client completed the
+    // action, crashed, or never started.
+    // Bound the wait by the server's own lifetime, not by a round number. The
+    // server above runs for 10s and the client starts ~2s into that, so a client
+    // that has not succeeded by then never will -- the server is gone. A longer
+    // deadline would only delay the report.
+    const CLIENT_BUDGET: Duration = Duration::from_secs(15);
+    let deadline = std::time::Instant::now() + CLIENT_BUDGET;
+    let client_status = loop {
+        let child = client_guard
+            .child
+            .as_mut()
+            .expect("client child owned by guard");
+        if let Some(status) = child.try_wait().expect("Failed to poll RCL action client") {
+            // The child is reaped, so its PID is free for the OS to reuse. Take
+            // it out of the guard: `ProcessGuard::drop` signals the process
+            // group by negative PID, and that runs only after the 10s server
+            // thread joins below. By then the PGID may belong to something else.
+            client_guard.child.take();
+            break Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            break None;
+        }
+        thread::sleep(Duration::from_millis(200));
+    };
+
+    match client_status {
+        None => {
+            // Kill the child before rendering -- see the same branch in
+            // `test_hiroz_add_two_ints_server_to_rcl_client` for why.
+            drop(client_guard);
+            panic!(
+                "RCL fibonacci action client did not exit within {}s\n{}",
+                CLIENT_BUDGET.as_secs(),
+                client_output.finish()
+            )
+        }
+        Some(status) if !status.success() => panic!(
+            "RCL fibonacci action client exited with failure status {status:?}\n{}",
+            client_output.finish()
+        ),
+        Some(_) => {}
+    }
+
+    // A zero exit status does not prove the client completed the action.
+    // `action_tutorials_cpp` calls `rclcpp::shutdown()` when its 10s
+    // `wait_for_action_server` expires, so the client exits 0 after printing
+    // "Action server not available after waiting" -- which is exactly the case
+    // this test exists to catch. Require the marker that only the result
+    // callback emits.
+    let client_out = client_output.finish();
+    assert!(
+        client_out.contains("Result received"),
+        "the C++ action client exited 0 but never reported a result, so it did not complete \
+         the action against the hiroz server. Captured output:\n{client_out}"
+    );
 
     // Stop the server
     server_handle.join().expect("Server thread panicked");

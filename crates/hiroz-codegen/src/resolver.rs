@@ -711,8 +711,8 @@ impl Resolver {
         // references — see calculate_send_goal_hash's identical comment on
         // `goal_desc`. Fixes actions whose Feedback embeds another custom message.
         let feedback_desc = feedback.type_description();
+        deps.insert(feedback_desc.type_name.clone(), feedback_desc.clone());
         self.collect_nested_deps(&feedback_desc, &mut deps);
-        deps.insert(feedback_desc.type_name.clone(), feedback_desc);
 
         // Build TypeDescriptionMsg and calculate hash
         use crate::hashing::{TypeDescriptionMsg, to_hash_version, to_ros2_json};

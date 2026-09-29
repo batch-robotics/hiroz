@@ -63,12 +63,12 @@ jobs:
             ros-jazzy-osrf-testing-tools-cpp
 
       - name: Checkout hiroz
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           path: hiroz
 
       - name: Checkout rcl fork
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           repository: YuanYuYuan/rcl
           ref: patch-rmwz/jazzy
@@ -80,7 +80,7 @@ jobs:
           cp -r $GITHUB_WORKSPACE/rcl ws/src/rcl
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1
 
       - name: Install Nushell
         run: |
@@ -107,9 +107,25 @@ jobs:
             --include-filter "$TEST_FILTER" \
             --exclude-filter "test_count_matched|test_events"
 
+      # The RMW graph APIs must report the ROS type name, not the wire form.
+      # The graph stores the wire form, so every RMW query demangles on the way
+      # out, as rmw_zenoh_cpp does. Only this workflow builds rmw_zenoh_rs, so
+      # only this workflow can catch a regression here.
+      - name: Graph queries report the ROS type name
+        shell: bash
+        run: |
+          set -o pipefail
+          source /opt/ros/jazzy/setup.bash
+          # The workspace overlay is what puts rmw_zenoh_rs on the RMW search
+          # path. Without it the talker cannot load the RMW at all.
+          source $GITHUB_WORKSPACE/ws/install/setup.bash
+          set -u
+          cd hiroz
+          nu scripts/test-ros.nu --distro jazzy graph-type-names
+
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: rmw-zenoh-rs-test-results
           path: ws/log/latest_test/

@@ -40,8 +40,11 @@ type BoxedServer = Arc<dyn std::any::Any + Send + Sync>;
 pub(crate) struct ParameterServiceConfig<'a> {
     pub session: Arc<Session>,
     pub graph: Arc<crate::graph::Graph>,
+    pub domain_id: usize,
+    pub keyexpr_format: hiroz_protocol::KeyExprFormat,
     pub node_name: &'a str,
     pub namespace: &'a str,
+    pub enclave: &'a str,
     pub node_id: usize,
     pub counter: &'a GlobalCounter,
     pub clock: &'a crate::time::ZClock,
@@ -284,8 +287,11 @@ impl ParameterService {
         let ParameterServiceConfig {
             session,
             graph,
+            domain_id,
+            keyexpr_format,
             node_name,
             namespace,
+            enclave,
             node_id,
             counter,
             clock,
@@ -297,12 +303,12 @@ impl ParameterService {
             wire_types::register_parameter_schemas(tds);
         }
         let node_entity = NodeEntity::new(
-            0,
+            domain_id,
             session.zid(),
             node_id,
             node_name.to_string(),
             namespace.to_string(),
-            String::new(),
+            enclave.to_string(),
         );
 
         // Compute node fully-qualified name for parameter events
@@ -322,8 +328,6 @@ impl ParameterService {
                 type_info: Some(type_info),
                 qos: Default::default(),
             };
-
-        let ke_format = hiroz_protocol::KeyExprFormat::default();
 
         // ── /parameter_events publisher ───────────────────────────────────────
         let pub_entity = EndpointEntity {
@@ -351,7 +355,7 @@ impl ParameterService {
                 clock: clock.clone(),
                 with_attachment: true,
                 shm_config: None,
-                keyexpr_format: ke_format.clone(),
+                keyexpr_format: keyexpr_format.clone(),
                 dyn_schema: None,
                 encoding: None,
                 _phantom_data: Default::default(),
@@ -380,7 +384,7 @@ impl ParameterService {
                 entity,
                 session: session.clone(),
                 clock: clock.clone(),
-                keyexpr_format: ke_format.clone(),
+                keyexpr_format: keyexpr_format.clone(),
                 _phantom_data: Default::default(),
             };
             builder.build_with_callback(move |query| {
@@ -400,7 +404,7 @@ impl ParameterService {
                 entity,
                 session: session.clone(),
                 clock: clock.clone(),
-                keyexpr_format: ke_format.clone(),
+                keyexpr_format: keyexpr_format.clone(),
                 _phantom_data: Default::default(),
             };
             builder.build_with_callback(move |query| {
@@ -420,7 +424,7 @@ impl ParameterService {
                 entity,
                 session: session.clone(),
                 clock: clock.clone(),
-                keyexpr_format: ke_format.clone(),
+                keyexpr_format: keyexpr_format.clone(),
                 _phantom_data: Default::default(),
             };
             builder.build_with_callback(move |query| {
@@ -440,7 +444,7 @@ impl ParameterService {
                 entity,
                 session: session.clone(),
                 clock: clock.clone(),
-                keyexpr_format: ke_format.clone(),
+                keyexpr_format: keyexpr_format.clone(),
                 _phantom_data: Default::default(),
             };
             builder.build_with_callback(move |query| {
@@ -460,7 +464,7 @@ impl ParameterService {
                 entity,
                 session: session.clone(),
                 clock: clock.clone(),
-                keyexpr_format: ke_format.clone(),
+                keyexpr_format: keyexpr_format.clone(),
                 _phantom_data: Default::default(),
             };
             builder.build_with_callback(move |query| {
@@ -480,7 +484,7 @@ impl ParameterService {
                 entity,
                 session: session.clone(),
                 clock: clock.clone(),
-                keyexpr_format: ke_format.clone(),
+                keyexpr_format: keyexpr_format.clone(),
                 _phantom_data: Default::default(),
             };
             builder.build_with_callback(move |query| {

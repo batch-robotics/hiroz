@@ -3,6 +3,11 @@ use std::{sync::Arc, time::Duration};
 use tracing::{debug, info, warn};
 use zenoh::{Result, Session, Wait, liveliness::LivelinessToken};
 
+// Only the FFI action paths below mangle a type name. This import therefore
+// carries the same gate as the code that uses it.
+#[cfg(feature = "ffi")]
+use hiroz_schema::type_name::dds_from_namespace;
+
 #[cfg(feature = "ffi")]
 use crate::ffi::publisher::RawPublisher;
 use crate::{
@@ -136,6 +141,15 @@ impl ZNodeBuilder {
     /// // Static publishers also auto-register when their message type provides
     /// // MessageTypeInfo::message_schema() (e.g. generated hiroz messages).
     /// ```
+    ///
+    /// # Why this is opt-in, and why you probably want it
+    ///
+    /// ROS 2 (rclcpp/rclpy) serves the equivalent service by default, and
+    /// hiroz's own RMW layer forces it on for every node it creates. A plain
+    /// hiroz node does not: it must opt in here. Without it, runtime-typed
+    /// consumers that have no compiled knowledge of the message — `hu meter
+    /// echo`, dynamic subscribers, bridges — cannot obtain the schema and
+    /// therefore cannot decode this node's messages.
     pub fn with_type_description_service(mut self) -> Self {
         self.enable_type_desc_service = true;
         self
@@ -227,13 +241,12 @@ impl Builder for ZNodeBuilder {
         // Create type description service if enabled
         let type_desc_service = if self.enable_type_desc_service {
             debug!("[NOD] Creating type description service");
-            let service = TypeDescriptionService::new(
+            let service = TypeDescriptionService::new_with_node(
                 self.session.clone(),
-                &self.name,
-                &self.namespace,
-                id,
+                node.clone(),
                 &self.counter,
                 &self.clock,
+                self.keyexpr_format.clone(),
             )?;
 
             info!("[NOD] TypeDescriptionService created (callback mode)");
@@ -249,8 +262,11 @@ impl Builder for ZNodeBuilder {
             let service = ParameterService::new(ParameterServiceConfig {
                 session: self.session.clone(),
                 graph: self.graph.clone(),
+                domain_id: self.domain_id,
+                keyexpr_format: self.keyexpr_format.clone(),
                 node_name: &self.name,
                 namespace: &self.namespace,
+                enclave: &node.enclave,
                 node_id: id,
                 counter: &self.counter,
                 clock: &self.clock,
@@ -290,7 +306,7 @@ impl ZNode {
     /// automatically registered for `GetTypeDescription` discovery.
     ///
     /// The topic name will be qualified according to ROS 2 rules:
-    /// - Absolute topics (starting with '/') are used as-is
+    /// - Absolute topics (starting with '/') are validated and used as given
     /// - Private topics (starting with '~') are expanded to /<namespace>/<node_name>/<topic>
     /// - Relative topics are expanded to /<namespace>/<topic>
     pub fn create_pub<T>(&self, topic: &str) -> ZPubBuilder<T, T::Serdes>
@@ -355,7 +371,7 @@ impl ZNode {
     /// If T implements WithTypeInfo, type information will be automatically populated
     ///
     /// The topic name will be qualified according to ROS 2 rules:
-    /// - Absolute topics (starting with '/') are used as-is
+    /// - Absolute topics (starting with '/') are validated and used as given
     /// - Private topics (starting with '~') are expanded to /<namespace>/<node_name>/<topic>
     /// - Relative topics are expanded to /<namespace>/<topic>
     pub fn create_sub<T>(&self, topic: &str) -> ZSubBuilder<T, T::Serdes>
@@ -452,7 +468,7 @@ impl ZNode {
     /// discovery for this service won't resolve.
     ///
     /// The service name will be qualified according to ROS 2 rules:
-    /// - Absolute service names (starting with '/') are used as-is
+    /// - Absolute service names (starting with '/') are validated and used as given
     /// - Private service names (starting with '~') are expanded to /<namespace>/<node_name>/<service>
     /// - Relative service names are expanded to /<namespace>/<service>
     pub fn create_service<T>(&self, name: &str) -> ZServerBuilder<T>
@@ -503,7 +519,7 @@ impl ZNode {
     /// If T is a tuple (Req, Resp) where both implement WithTypeInfo, type information will be automatically populated
     ///
     /// The service name will be qualified according to ROS 2 rules:
-    /// - Absolute service names (starting with '/') are used as-is
+    /// - Absolute service names (starting with '/') are validated and used as given
     /// - Private service names (starting with '~') are expanded to /<namespace>/<node_name>/<service>
     /// - Relative service names are expanded to /<namespace>/<service>
     pub fn create_client<T>(&self, name: &str) -> ZClientBuilder<T>
@@ -825,17 +841,19 @@ impl ZNode {
         // Compute DDS-style type names required by rmw_zenoh_cpp's graph discovery.
         // action_type is e.g. "example_interfaces/action/Fibonacci" → package="example_interfaces", name="Fibonacci"
         let (pkg, aname) = split_action_type(action_type);
-        let send_goal_type = format!("{}::action::dds_::{}_SendGoal_", pkg, aname);
-        let get_result_type = format!("{}::action::dds_::{}_GetResult_", pkg, aname);
-        let cancel_goal_type = "action_msgs::srv::dds_::CancelGoal_";
-        let feedback_type_dds = format!("{}::action::dds_::{}_FeedbackMessage_", pkg, aname);
+        let action_ns = format!("{pkg}::action");
+        let send_goal_type = dds_from_namespace(&action_ns, &format!("{aname}_SendGoal"));
+        let get_result_type = dds_from_namespace(&action_ns, &format!("{aname}_GetResult"));
+        let cancel_goal_type = dds_from_namespace("action_msgs::srv", "CancelGoal");
+        let feedback_type_dds =
+            dds_from_namespace(&action_ns, &format!("{aname}_FeedbackMessage"));
 
         let send_goal_client =
             self.create_raw_service_client(&send_goal_service, &send_goal_type, goal_hash)?;
         let get_result_client =
             self.create_raw_service_client(&get_result_service, &get_result_type, result_hash)?;
         let cancel_goal_client =
-            self.create_raw_service_client(&cancel_goal_service, cancel_goal_type, "")?;
+            self.create_raw_service_client(&cancel_goal_service, &cancel_goal_type, "")?;
 
         // Feedback subscriber (no-op callback for now; Go handles via polling or separate mechanism)
         let feedback_sub =
@@ -873,22 +891,24 @@ impl ZNode {
         // Compute DDS-style type names required by rmw_zenoh_cpp's graph discovery.
         // action_type is e.g. "example_interfaces/action/Fibonacci" → package="example_interfaces", name="Fibonacci"
         let (pkg, aname) = split_action_type(action_type);
-        let send_goal_type = format!("{}::action::dds_::{}_SendGoal_", pkg, aname);
-        let get_result_type = format!("{}::action::dds_::{}_GetResult_", pkg, aname);
-        let cancel_goal_type = "action_msgs::srv::dds_::CancelGoal_";
-        let feedback_type_dds = format!("{}::action::dds_::{}_FeedbackMessage_", pkg, aname);
-        let status_type_dds = "action_msgs::msg::dds_::GoalStatusArray_";
+        let action_ns = format!("{pkg}::action");
+        let send_goal_type = dds_from_namespace(&action_ns, &format!("{aname}_SendGoal"));
+        let get_result_type = dds_from_namespace(&action_ns, &format!("{aname}_GetResult"));
+        let cancel_goal_type = dds_from_namespace("action_msgs::srv", "CancelGoal");
+        let feedback_type_dds =
+            dds_from_namespace(&action_ns, &format!("{aname}_FeedbackMessage"));
+        let status_type_dds = dds_from_namespace("action_msgs::msg", "GoalStatusArray");
 
         let send_goal_server =
             self.create_raw_service_server(&send_goal_service, &send_goal_type, goal_hash)?;
         let get_result_server =
             self.create_raw_service_server(&get_result_service, &get_result_type, result_hash)?;
         let cancel_goal_server =
-            self.create_raw_service_server(&cancel_goal_service, cancel_goal_type, "")?;
+            self.create_raw_service_server(&cancel_goal_service, &cancel_goal_type, "")?;
 
         let feedback_pub =
             self.create_raw_publisher(&feedback_topic, &feedback_type_dds, feedback_hash)?;
-        let status_pub = self.create_raw_publisher(&status_topic, status_type_dds, "")?;
+        let status_pub = self.create_raw_publisher(&status_topic, &status_type_dds, "")?;
 
         Ok(crate::ffi::action::RawActionServer {
             send_goal_server,
@@ -1234,7 +1254,7 @@ impl ZNode {
     /// combined with [`create_dyn_sub`] instead.
     ///
     /// The topic name will be qualified according to ROS 2 rules:
-    /// - Absolute topics (starting with '/') are used as-is
+    /// - Absolute topics (starting with '/') are validated and used as given
     /// - Private topics (starting with '~') are expanded to /<namespace>/<node_name>/<topic>
     /// - Relative topics are expanded to /<namespace>/<topic>
     ///
@@ -1291,7 +1311,7 @@ impl ZNode {
     /// * `schema` - The message schema for deserialization
     ///
     /// The topic name will be qualified according to ROS 2 rules:
-    /// - Absolute topics (starting with '/') are used as-is
+    /// - Absolute topics (starting with '/') are validated and used as given
     /// - Private topics (starting with '~') are expanded to /<namespace>/<node_name>/<topic>
     /// - Relative topics are expanded to /<namespace>/<topic>
     ///

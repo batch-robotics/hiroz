@@ -19,6 +19,9 @@ use hiroz::{
     Builder,
     event::{RmEventHandle, ZenohEventType},
 };
+// The graph holds wire-form type names. Every RMW query below is a boundary.
+// Each one must report the ROS form instead, as rmw_zenoh_cpp does.
+use hiroz_protocol::format::rmw_zenoh::ros_type_name;
 
 use crate::{
     pubsub::{PublisherImpl, SubscriptionImpl},
@@ -265,20 +268,13 @@ pub extern "C" fn rmw_create_publisher(
         graph.get_entities_by_topic(hiroz::entity::EndpointKind::Subscription, &entity.topic);
 
     // Track which subscription GIDs we've already checked to avoid double-counting
-    let local_zid = graph.zid;
     let mut checked_gids = std::collections::HashSet::new();
     let mut incompatible_count = 0;
     let mut last_policy_kind = 0u32;
     for sub_entity in &sub_entities {
         if let Some(endpoint) = hiroz::entity::entity_get_endpoint(sub_entity) {
             // Skip Ros2Dds endpoints that carry no node identity
-            let Some(node) = endpoint.node.as_ref() else {
-                continue;
-            };
-
-            // Only check QoS compatibility with entities from the same Zenoh session
-            // This avoids counting subscriptions from previous test cases that used different sessions
-            if node.z_id != local_zid {
+            if endpoint.node.is_none() {
                 continue;
             }
 
@@ -651,20 +647,13 @@ pub extern "C" fn rmw_create_subscription(
         graph.get_entities_by_topic(hiroz::entity::EndpointKind::Publisher, &entity.topic);
 
     // Track which publisher GIDs we've already checked to avoid double-counting
-    let local_zid = graph.zid;
     let mut checked_gids = std::collections::HashSet::new();
     let mut incompatible_count = 0;
     let mut last_policy_kind = 0u32;
     for pub_entity in &pub_entities {
         if let Some(endpoint) = hiroz::entity::entity_get_endpoint(pub_entity) {
             // Skip Ros2Dds endpoints that carry no node identity
-            let Some(node) = endpoint.node.as_ref() else {
-                continue;
-            };
-
-            // Only check QoS compatibility with entities from the same Zenoh session
-            // This avoids counting publishers from previous test cases that used different sessions
-            if node.z_id != local_zid {
+            if endpoint.node.is_none() {
                 continue;
             }
 
@@ -1501,7 +1490,7 @@ pub extern "C" fn rmw_get_topic_names_and_types(
 
             // Populate type names
             for (type_index, type_name) in type_names.iter().enumerate() {
-                let type_cstr = match std::ffi::CString::new(type_name.as_str()) {
+                let type_cstr = match std::ffi::CString::new(ros_type_name(type_name)) {
                     Ok(s) => s,
                     Err(_) => {
                         rmw_names_and_types_fini(topic_names_and_types);
@@ -1623,7 +1612,7 @@ pub extern "C" fn rmw_get_service_names_and_types(
 
             // Populate type names
             for (type_index, type_name) in type_names.iter().enumerate() {
-                let type_cstr = match std::ffi::CString::new(type_name.as_str()) {
+                let type_cstr = match std::ffi::CString::new(ros_type_name(type_name)) {
                     Ok(s) => s,
                     Err(_) => {
                         rmw_names_and_types_fini(service_names_and_types);
@@ -1975,7 +1964,7 @@ pub extern "C" fn rmw_get_publishers_info_by_topic(
 
             // Set topic type
             if let Some(ref type_info) = endpoint.type_info {
-                let type_cstr = match std::ffi::CString::new(type_info.name.as_str()) {
+                let type_cstr = match std::ffi::CString::new(ros_type_name(&type_info.name)) {
                     Ok(s) => s,
                     Err(_) => {
                         rmw_topic_endpoint_info_array_fini(publishers_info, allocator as *mut _);
@@ -2002,31 +1991,7 @@ pub extern "C" fn rmw_get_publishers_info_by_topic(
             (*endpoint_info).endpoint_gid = gid_data;
 
             // Set QoS profile - convert from protocol QoS to hiroz QoS to rmw QoS
-            let hiroz_qos = hiroz::qos::QosProfile {
-                reliability: match endpoint.qos.reliability {
-                    hiroz_protocol::qos::QosReliability::Reliable => {
-                        hiroz::qos::QosReliability::Reliable
-                    }
-                    hiroz_protocol::qos::QosReliability::BestEffort => {
-                        hiroz::qos::QosReliability::BestEffort
-                    }
-                },
-                durability: match endpoint.qos.durability {
-                    hiroz_protocol::qos::QosDurability::TransientLocal => {
-                        hiroz::qos::QosDurability::TransientLocal
-                    }
-                    hiroz_protocol::qos::QosDurability::Volatile => {
-                        hiroz::qos::QosDurability::Volatile
-                    }
-                },
-                history: match endpoint.qos.history {
-                    hiroz_protocol::qos::QosHistory::KeepLast(depth) => {
-                        hiroz::qos::QosHistory::from_depth(depth)
-                    }
-                    hiroz_protocol::qos::QosHistory::KeepAll => hiroz::qos::QosHistory::KeepAll,
-                },
-                ..Default::default()
-            };
+            let hiroz_qos = crate::pubsub::protocol_qos_to_hiroz_qos(&endpoint.qos);
             (*endpoint_info).qos_profile = crate::qos::hiroz_qos_to_rmw_qos(&hiroz_qos);
         }
     }
@@ -2175,7 +2140,7 @@ pub extern "C" fn rmw_get_subscriber_names_and_types_by_node(
 
             // Populate type names
             for (type_index, type_name) in type_names.iter().enumerate() {
-                let type_cstr = match std::ffi::CString::new(type_name.as_str()) {
+                let type_cstr = match std::ffi::CString::new(ros_type_name(type_name)) {
                     Ok(s) => s,
                     Err(_) => {
                         rmw_names_and_types_fini(topic_names_and_types);
@@ -3047,7 +3012,7 @@ pub extern "C" fn rmw_get_client_names_and_types_by_node(
             }
 
             for (type_index, type_name) in type_names.iter().enumerate() {
-                let type_cstr = match std::ffi::CString::new(type_name.as_str()) {
+                let type_cstr = match std::ffi::CString::new(ros_type_name(type_name)) {
                     Ok(s) => s,
                     Err(_) => {
                         rmw_names_and_types_fini(service_names_and_types);
@@ -3216,7 +3181,7 @@ pub extern "C" fn rmw_get_publisher_names_and_types_by_node(
             }
 
             for (type_index, type_name) in type_names.iter().enumerate() {
-                let type_cstr = match std::ffi::CString::new(type_name.as_str()) {
+                let type_cstr = match std::ffi::CString::new(ros_type_name(type_name)) {
                     Ok(s) => s,
                     Err(_) => {
                         rmw_names_and_types_fini(topic_names_and_types);
@@ -3391,7 +3356,7 @@ pub extern "C" fn rmw_get_service_names_and_types_by_node(
             }
 
             for (type_index, type_name) in type_names.iter().enumerate() {
-                let type_cstr = match std::ffi::CString::new(type_name.as_str()) {
+                let type_cstr = match std::ffi::CString::new(ros_type_name(type_name)) {
                     Ok(s) => s,
                     Err(_) => {
                         rmw_names_and_types_fini(service_names_and_types);
@@ -3522,7 +3487,7 @@ pub extern "C" fn rmw_get_subscriptions_info_by_topic(
 
             // Set topic type
             if let Some(ref type_info) = endpoint.type_info {
-                let type_cstr = match std::ffi::CString::new(type_info.name.as_str()) {
+                let type_cstr = match std::ffi::CString::new(ros_type_name(&type_info.name)) {
                     Ok(s) => s,
                     Err(_) => {
                         rmw_topic_endpoint_info_array_fini(subscriptions_info, allocator as *mut _);
@@ -3549,31 +3514,7 @@ pub extern "C" fn rmw_get_subscriptions_info_by_topic(
             (*endpoint_info).endpoint_gid = gid_data;
 
             // Set QoS profile - convert from protocol QoS to hiroz QoS to rmw QoS
-            let hiroz_qos = hiroz::qos::QosProfile {
-                reliability: match endpoint.qos.reliability {
-                    hiroz_protocol::qos::QosReliability::Reliable => {
-                        hiroz::qos::QosReliability::Reliable
-                    }
-                    hiroz_protocol::qos::QosReliability::BestEffort => {
-                        hiroz::qos::QosReliability::BestEffort
-                    }
-                },
-                durability: match endpoint.qos.durability {
-                    hiroz_protocol::qos::QosDurability::TransientLocal => {
-                        hiroz::qos::QosDurability::TransientLocal
-                    }
-                    hiroz_protocol::qos::QosDurability::Volatile => {
-                        hiroz::qos::QosDurability::Volatile
-                    }
-                },
-                history: match endpoint.qos.history {
-                    hiroz_protocol::qos::QosHistory::KeepLast(depth) => {
-                        hiroz::qos::QosHistory::from_depth(depth)
-                    }
-                    hiroz_protocol::qos::QosHistory::KeepAll => hiroz::qos::QosHistory::KeepAll,
-                },
-                ..Default::default()
-            };
+            let hiroz_qos = crate::pubsub::protocol_qos_to_hiroz_qos(&endpoint.qos);
             (*endpoint_info).qos_profile = crate::qos::hiroz_qos_to_rmw_qos(&hiroz_qos);
         }
     }
