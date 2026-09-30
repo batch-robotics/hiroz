@@ -245,6 +245,129 @@ fn test_yaml_parameter_loading() {
     assert!(other_params.contains_key("timeout")); // wildcard still applies
 }
 
+/// Test that `--ros-args` overrides from argv reach `declare_parameter`,
+/// read-only parameters included, the way rclcpp applies them.
+#[test]
+fn test_ros_args_parameter_overrides() {
+    use hiroz::ros_args::RosArgs;
+
+    let dir = std::env::temp_dir().join(format!("hiroz-ros-args-itest-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    // The shape a layered-config launcher writes: JSON, nested mappings.
+    let base = dir.join("base.yaml");
+    std::fs::write(
+        &base,
+        r#"{"/**":{"ros__parameters":{"db":{"url":"sqlite:base.db","pool_size":2},"port":8080}}}"#,
+    )
+    .expect("write base");
+    let layer = dir.join("layer.yaml");
+    std::fs::write(
+        &layer,
+        "/cell/ros_args_node:\n  ros__parameters:\n    db:\n      pool_size: 8\n",
+    )
+    .expect("write layer");
+
+    let ros_args = RosArgs::parse([
+        "backend".to_string(),
+        "--verbose".to_string(),
+        "--ros-args".to_string(),
+        "--params-file".to_string(),
+        base.display().to_string(),
+        "--params-file".to_string(),
+        layer.display().to_string(),
+        "-p".to_string(),
+        "port:=9090".to_string(),
+        "-p".to_string(),
+        "untouched:=5".to_string(),
+        "--".to_string(),
+        "serve".to_string(),
+    ])
+    .expect("parse argv");
+    assert_eq!(ros_args.remaining_args(), ["backend", "--verbose", "serve"]);
+
+    let router = TestRouter::new();
+    let ctx = create_hiroz_context_with_router(&router).expect("context");
+    let mut builder_overrides = std::collections::HashMap::new();
+    builder_overrides.insert("untouched".to_string(), ParameterValue::Integer(6));
+    let node = ctx
+        .create_node("ros_args_node")
+        .with_ros_args(&ros_args)
+        .with_parameter_overrides(builder_overrides)
+        // Resolved at build(), so the namespace may be set afterwards.
+        .with_namespace("cell")
+        .build()
+        .expect("node");
+
+    let declare_read_only = |name: &str, type_: ParameterType, default: ParameterValue| {
+        let mut desc = ParameterDescriptor::new(name, type_);
+        desc.read_only = true;
+        node.declare_parameter(name, default, desc)
+            .expect("declare")
+    };
+
+    assert_eq!(
+        declare_read_only(
+            "db.url",
+            ParameterType::String,
+            ParameterValue::String("default".into())
+        ),
+        ParameterValue::String("sqlite:base.db".into())
+    );
+    // The node-specific layer overrides the base file.
+    assert_eq!(
+        declare_read_only(
+            "db.pool_size",
+            ParameterType::Integer,
+            ParameterValue::Integer(1)
+        ),
+        ParameterValue::Integer(8)
+    );
+    // The later -p overrides both files.
+    assert_eq!(
+        declare_read_only("port", ParameterType::Integer, ParameterValue::Integer(80)),
+        ParameterValue::Integer(9090)
+    );
+    // Builder overrides win over the command line, as in rclcpp.
+    assert_eq!(
+        declare_read_only(
+            "untouched",
+            ParameterType::Integer,
+            ParameterValue::Integer(0)
+        ),
+        ParameterValue::Integer(6)
+    );
+    // Undeclared-by-argv parameters keep their default.
+    assert_eq!(
+        declare_read_only("missing", ParameterType::Bool, ParameterValue::Bool(true)),
+        ParameterValue::Bool(true)
+    );
+
+    // Read-only still holds after the override.
+    let err = node
+        .set_parameter(Parameter::new("port", ParameterValue::Integer(1)))
+        .unwrap_err();
+    assert!(err.contains("read-only"), "{err}");
+    assert_eq!(
+        node.get_parameter("port"),
+        Some(ParameterValue::Integer(9090))
+    );
+
+    // An override whose type does not match the declaration is rejected.
+    let desc = ParameterDescriptor::new("db.url", ParameterType::String);
+    let other = ctx
+        .create_node("type_mismatch_node")
+        .with_ros_args(&RosArgs::parse(["prog", "--ros-args", "-p", "db.url:=5"]).unwrap())
+        .build()
+        .expect("node");
+    assert!(
+        other
+            .declare_parameter("db.url", ParameterValue::String("x".into()), desc)
+            .is_err()
+    );
+
+    std::fs::remove_dir_all(dir).ok();
+}
+
 /// Test the high-level parameter client, including get_types and atomic set.
 #[test]
 fn test_parameter_client_high_level_api() {

@@ -28,6 +28,111 @@ impl ProcessGuard {
     }
 }
 
+/// Concurrently drains a child's piped `stdout` and `stderr` so they can be
+/// reported when the child fails.
+///
+/// A test that spawns an external process and discards its diagnostics can only
+/// report *that* the process failed, never why. `ros2 run` writes its reason to
+/// stderr, so a test which asserts on an exit status must capture both streams
+/// and surface them in the failure message.
+///
+/// **Draining concurrently is what makes piping safe.** A pipe nobody reads
+/// fills, and the child then blocks writing to it — which would convert a fast
+/// failure into whatever timeout the caller's wait loop uses. One reader thread
+/// per stream removes that coupling: they run until EOF, which arrives when the
+/// child exits.
+pub struct OutputCapture {
+    stdout: Arc<std::sync::Mutex<String>>,
+    stderr: Arc<std::sync::Mutex<String>>,
+    readers: Vec<thread::JoinHandle<()>>,
+}
+
+#[allow(dead_code)]
+impl OutputCapture {
+    /// Takes the child's piped handles and starts draining them immediately.
+    ///
+    /// Call directly after `spawn`, before any wait loop. A stream that was not
+    /// piped contributes nothing.
+    pub fn start(child: &mut Child) -> Self {
+        use std::io::{BufRead, BufReader, Read};
+
+        fn drain<R: Read + Send + 'static>(
+            stream: Option<R>,
+            sink: Arc<std::sync::Mutex<String>>,
+        ) -> Option<thread::JoinHandle<()>> {
+            let stream = stream?;
+            Some(thread::spawn(move || {
+                // Append line by line rather than reading to EOF in one call, so
+                // [`OutputCapture::snapshot`] can observe a still-running child.
+                // A process that never exits on its own — a subscriber, say —
+                // would otherwise yield nothing until it was killed.
+                //
+                // A read error is not worth failing over: the caller is already
+                // reporting a failure and this is supplementary detail.
+                for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                    if let Ok(mut sink) = sink.lock() {
+                        sink.push_str(&line);
+                        sink.push('\n');
+                    }
+                }
+            }))
+        }
+
+        let stdout = Arc::new(std::sync::Mutex::new(String::new()));
+        let stderr = Arc::new(std::sync::Mutex::new(String::new()));
+        let readers = [
+            drain(child.stdout.take(), stdout.clone()),
+            drain(child.stderr.take(), stderr.clone()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        Self {
+            stdout,
+            stderr,
+            readers,
+        }
+    }
+
+    /// Everything captured so far on **both** streams, without waiting for the
+    /// child.
+    ///
+    /// For a process that does not exit on its own — a subscriber that runs
+    /// until it is signalled — this is the only way to assert on what it
+    /// printed. [`Self::finish`] would block until the reader threads see EOF.
+    ///
+    /// Both streams are included because **ROS 2 logging goes to stderr by
+    /// default**: an `RCLCPP_INFO` line such as the listener's `I heard` is not
+    /// on stdout unless `RCUTILS_LOGGING_USE_STDOUT` is set. Asserting on stdout
+    /// alone silently observes an empty buffer and reads as "the node received
+    /// nothing".
+    pub fn snapshot(&self) -> String {
+        let out = self.stdout.lock().map(|s| s.clone()).unwrap_or_default();
+        let err = self.stderr.lock().map(|s| s.clone()).unwrap_or_default();
+        format!("{out}{err}")
+    }
+
+    /// Joins the reader threads and renders both streams as a printable block.
+    ///
+    /// Call only once the child has exited, so the readers have reached EOF.
+    pub fn finish(self) -> String {
+        for reader in self.readers {
+            let _ = reader.join();
+        }
+        let mut block = String::new();
+        for (label, sink) in [("stdout", &self.stdout), ("stderr", &self.stderr)] {
+            let text = sink.lock().map(|s| s.clone()).unwrap_or_default();
+            if text.trim().is_empty() {
+                block.push_str(&format!("--- child {label}: <empty> ---\n"));
+            } else {
+                block.push_str(&format!("--- child {label} ---\n{}\n", text.trim_end()));
+            }
+        }
+        block
+    }
+}
+
 impl Drop for ProcessGuard {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {

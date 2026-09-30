@@ -422,14 +422,7 @@ impl RegisteredSchema {
 /// `pkg::msg::Foo` → `pkg/msg/Foo`
 /// `pkg/msg/Foo` → `pkg/msg/Foo` (unchanged)
 fn normalize_type_name_for_lookup(name: &str) -> String {
-    name.replace("::msg::dds_::", "/msg/")
-        .replace("::srv::dds_::", "/srv/")
-        .replace("::action::dds_::", "/action/")
-        .replace("::msg::", "/msg/")
-        .replace("::srv::", "/srv/")
-        .replace("::action::", "/action/")
-        .trim_end_matches('_')
-        .to_string()
+    hiroz_schema::type_name::ros_from_dds(name)
 }
 
 /// a background task that would block on queue.recv().
@@ -442,7 +435,11 @@ pub struct TypeDescriptionService {
 }
 
 impl TypeDescriptionService {
-    /// Create a new TypeDescriptionService.
+    /// Create a domain-0 TypeDescriptionService using the default key-expression format.
+    ///
+    /// Nodes created by [`ZNodeBuilder`](crate::node::ZNodeBuilder) inherit their context via
+    /// [`Self::new_with_node`]. Use that constructor when creating this service manually for a
+    /// non-default domain or key-expression format.
     ///
     /// # Arguments
     ///
@@ -463,6 +460,34 @@ impl TypeDescriptionService {
         counter: &crate::context::GlobalCounter,
         clock: &crate::time::ZClock,
     ) -> ZResult<Self> {
+        let node = crate::entity::NodeEntity::new(
+            0,
+            session.zid(),
+            node_id,
+            node_name.to_string(),
+            namespace.to_string(),
+            String::new(),
+        );
+        Self::new_with_node(
+            session,
+            node,
+            counter,
+            clock,
+            hiroz_protocol::KeyExprFormat::default(),
+        )
+    }
+
+    /// Create a TypeDescriptionService from an existing node identity and key-expression format.
+    ///
+    /// `node.z_id` must identify `session`. Passing the owning node's entity avoids silently
+    /// resetting its domain, namespace, enclave, or other discovery identity.
+    pub fn new_with_node(
+        session: Arc<Session>,
+        node: crate::entity::NodeEntity,
+        counter: &crate::context::GlobalCounter,
+        clock: &crate::time::ZClock,
+        keyexpr_format: hiroz_protocol::KeyExprFormat,
+    ) -> ZResult<Self> {
         let schemas: Arc<RwLock<HashMap<String, RegisteredSchema>>> =
             Arc::new(RwLock::new(HashMap::new()));
 
@@ -471,19 +496,12 @@ impl TypeDescriptionService {
         // which expands to /{namespace}/{node_name}/get_type_description
         let service_name = "~get_type_description";
 
-        // Create the node entity for the service
-        let node_entity = crate::entity::NodeEntity::new(
-            0, // domain_id
-            session.zid(),
-            node_id,
-            node_name.to_string(),
-            namespace.to_string(),
-            String::new(), // enclave (empty, normalized to "%" in liveliness token)
-        );
+        let node_name = node.name.clone();
+        let namespace = node.namespace.clone();
 
         let entity = crate::entity::EndpointEntity {
             id: counter.increment(),
-            node: Some(node_entity),
+            node: Some(node),
             kind: crate::entity::EndpointKind::Service,
             topic: service_name.to_string(),
             type_info: Some(GetTypeDescription::service_type_info()),
@@ -495,7 +513,7 @@ impl TypeDescriptionService {
             entity,
             session,
             clock: clock.clone(),
-            keyexpr_format: hiroz_protocol::KeyExprFormat::default(),
+            keyexpr_format,
             _phantom_data: Default::default(),
         };
 

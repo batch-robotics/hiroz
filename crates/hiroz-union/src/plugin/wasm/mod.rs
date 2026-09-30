@@ -15,6 +15,7 @@ pub use host::web_bindgen::hu::plugin::web_types::{HttpRequest, HttpResponse};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -200,6 +201,74 @@ fn configured_wasm_engine() -> Result<Engine> {
     Engine::new(&engine_config).context("creating WASM engine")
 }
 
+// ─── Epoch budget vs. blocking host calls ────────────────────────────────────
+
+/// Number of host calls that block on I/O for a guest at this moment.
+///
+/// Every guest dispatch calls `set_epoch_deadline(30)`. The ticker below
+/// increments the epoch every 100 ms. A guest therefore gets about 3 s of
+/// *wall clock*.
+///
+/// The ticker measures wall clock. It does not measure guest execution. A host
+/// call that waits on the network spends the guest's budget while the guest
+/// does not run. wasmtime then traps the guest as soon as that call returns.
+/// The guest never runs the code that the call gave it.
+///
+/// This bound is not theoretical. Schema discovery waits for a live publisher
+/// and then queries it. On a cold graph that takes seconds.
+static HOST_BLOCKING_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+/// Suspends the epoch ticker while this guard is alive. Hold one around any
+/// host call that blocks on I/O. The host then does not charge the wait to the
+/// guest's compute budget.
+///
+/// The host runs one engine and one ticker. The suspension therefore applies to
+/// every guest. It does not apply only to the guest that called the host.
+///
+/// Serialised dispatch makes this acceptable today. The CLI runs one plugin in
+/// a sequential loop. The TUI iterates the plugins in order. `hu web` holds one
+/// mutex over the plugin vector. Two guests cannot run at once, so no second
+/// guest exists to preempt.
+///
+/// The serialisation bounds the cost. The length of the wait does not bound it.
+/// A reader can easily confuse these two reasons, and only the first one holds.
+/// Per-plugin locks or a plugin pool would remove the serialisation. The gap
+/// then becomes real, and the per-store shape below is the fix.
+///
+/// The waits themselves are bounded. Check where each bound comes from. The two
+/// discovery calls use a fixed 2 s constant. The service reply waits use
+/// `timeout-ms`, and the guest chooses that value. `clamp_guest_timeout` in
+/// `host/ros.rs` caps it. An unclamped `u32` would let a plugin choose how long
+/// the host stops preempting plugins.
+///
+/// The per-store alternative, for whoever needs it: wasmtime supplies
+/// `Store::epoch_deadline_callback`, and host functions already hold
+/// `&mut PluginState`, which is the store data. A flag there and a callback that
+/// returns `UpdateDeadline::Continue` extend the deadline of the blocked guest
+/// alone. Every other guest stays preemptible. That design is better, and it
+/// costs more work. This counter behaves the same way while dispatch stays
+/// serialised.
+pub(crate) struct HostBlockGuard(());
+
+impl HostBlockGuard {
+    pub(crate) fn enter() -> Self {
+        HOST_BLOCKING_CALLS.fetch_add(1, Ordering::SeqCst);
+        Self(())
+    }
+}
+
+impl Drop for HostBlockGuard {
+    fn drop(&mut self) {
+        HOST_BLOCKING_CALLS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Reports whether the epoch ticker may advance now. This function is separate
+/// so that a test can check the rule without an engine.
+fn epoch_should_tick() -> bool {
+    HOST_BLOCKING_CALLS.load(Ordering::SeqCst) == 0
+}
+
 /// Process-wide shared WASM engine (and its single epoch-ticker task). Building
 /// a fresh engine per `load_plugins` call would spawn a new ticker each time —
 /// the TUI's `reload_plugins` loops, so tickers (each holding an engine clone)
@@ -220,7 +289,9 @@ fn shared_wasm_engine() -> Result<Engine> {
             handle.spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_millis(100)).await;
-                    ticker_engine.increment_epoch();
+                    if epoch_should_tick() {
+                        ticker_engine.increment_epoch();
+                    }
                 }
             });
         } else {
@@ -232,7 +303,9 @@ fn shared_wasm_engine() -> Result<Engine> {
                 .spawn(move || {
                     loop {
                         std::thread::sleep(Duration::from_millis(100));
-                        ticker_engine.increment_epoch();
+                        if epoch_should_tick() {
+                            ticker_engine.increment_epoch();
+                        }
                     }
                 })
             {
@@ -357,7 +430,7 @@ fn iter_wasm_files() -> impl Iterator<Item = PathBuf> {
 /// outside `[A-Za-z0-9_-]` — including `.` and path separators — to `_`, so the
 /// result is always a single safe segment (`..` becomes `__`); fall back to
 /// `"unknown"` only for an empty stem.
-fn sanitize_plugin_stem(plugin_stem: &str) -> String {
+pub(crate) fn sanitize_plugin_stem(plugin_stem: &str) -> String {
     let cleaned: String = plugin_stem
         .chars()
         .map(|c| {
@@ -583,15 +656,61 @@ pub fn validate_plugin_static(path: &std::path::Path) -> Result<String> {
     Ok(format!("OK: {} is a valid WASM component", path.display()))
 }
 
-fn plugin_search_dirs() -> Vec<PathBuf> {
+pub(crate) fn plugin_search_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(paths) = std::env::var("HU_PLUGIN_PATH") {
         for p in std::env::split_paths(&paths) {
             dirs.push(p);
         }
     }
+    // Prefix-relative, derived from where THIS binary sits. `install-hu.sh
+    // --prefix /opt/hu` writes the binary to /opt/hu/bin/hu and the plugins to
+    // /opt/hu/share/hu/plugins; without this the install succeeds, reports
+    // "installed plugin hu_meter.wasm", and then `hu plugin list` -- which the
+    // installer's own closing message tells the user to run -- is empty,
+    // because discovery only ever looked under $HOME.
+    //
+    // Both CI callers set HU_PREFIX and HOME to the same scratch directory,
+    // which is the one configuration where that bug cannot appear.
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(prefix) = exe.parent().and_then(|bin| bin.parent())
+    {
+        dirs.push(prefix.join("share/hu/plugins"));
+    }
     if let Some(home) = dirs::home_dir() {
         dirs.push(home.join(".local/share/hu/plugins"));
     }
+    // A default-prefix install makes the two paths above identical, and a
+    // duplicated directory would list every plugin twice.
+    dirs.dedup();
     dirs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HostBlockGuard, epoch_should_tick};
+
+    // This counter is the only thing that stops the ticker from charging
+    // network waits to the guest's compute budget. A later edit can delete one
+    // `fetch_add` and remove that protection. No other test finds it.
+    //
+    // This test is serial by construction. No other unit test in this crate
+    // takes the guard, because a host call needs a store.
+    #[test]
+    fn host_block_guard_suspends_the_epoch_ticker() {
+        assert!(epoch_should_tick(), "ticker suspended before any guard");
+        {
+            let _outer = HostBlockGuard::enter();
+            assert!(!epoch_should_tick(), "guard did not suspend the ticker");
+            {
+                let _inner = HostBlockGuard::enter();
+                assert!(!epoch_should_tick(), "nested guard un-suspended it");
+            }
+            assert!(
+                !epoch_should_tick(),
+                "dropping the inner guard resumed ticking while the outer is held"
+            );
+        }
+        assert!(epoch_should_tick(), "ticker never resumed");
+    }
 }

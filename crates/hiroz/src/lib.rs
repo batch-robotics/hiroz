@@ -81,6 +81,8 @@ pub mod qos;
 pub mod queue;
 /// Debug-time enforcement of "no user callback under a hiroz lock guard".
 pub mod reentrancy;
+/// ROS 2 command-line arguments (`--ros-args --params-file ... -p ...`).
+pub mod ros_args;
 /// Message type metadata traits (`WithTypeInfo`, etc.).
 pub mod ros_msg;
 /// ROS 2 service client and server.
